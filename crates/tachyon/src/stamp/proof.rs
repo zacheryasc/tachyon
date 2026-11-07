@@ -29,12 +29,40 @@ pub mod summary;
 
 use lazy_static::lazy_static;
 use ragu::{Application, ApplicationBuilder, RegistryTags};
-use ragu_circuits::polynomials::ProductionRank;
-use ragu_core::{Cycle as _, FixedGenerators as _, drivers::Driver, pasta::Pasta};
-use ragu_primitives::Element;
-use udon::curve::Affine as _;
+use ragu_circuits::{polynomials::ProductionRank, staging::wire_degree};
+use ragu_core::{Cycle, FixedGenerators as _, drivers::Driver, pasta::Pasta};
+use ragu_primitives::{ENDOSCALAR_BITS, ENDOSCALAR_PRODUCTS, Element};
+use udon::curve::{Affine, Projective as _};
 
 use crate::{constants::EPOCH_MAX, pasta, relations::arithmetic::bounded};
+
+/// Prepares the constant-one commitment's bridge hash without an application.
+fn empty_stamp_bridge_hash(params: &<Pasta as Cycle>::Params) -> ragu_core::Result<[pasta::Fp; 2]> {
+    let (x, y) = Pasta::host_generators(params)
+        .g()
+        .first()
+        .and_then(Affine::coordinates)
+        .ok_or_else(|| {
+            ragu_core::Error::Initialization("constant-one commitment is not finite".into())
+        })?;
+    // The bridge point follows the hoisted endoscalar's bits and products,
+    // starting at the next reserved gate (two stage wires per gate).
+    let first_wire = (ENDOSCALAR_BITS + ENDOSCALAR_PRODUCTS).next_multiple_of(2);
+    let generators = Pasta::nested_generators(params).g();
+    let [left, right] = [first_wire, first_wire + 1].map(|wire| {
+        generators
+            .get(wire_degree::<ProductionRank>(wire))
+            .ok_or_else(|| ragu_core::Error::Initialization("bridge generator is missing".into()))
+    });
+    let commitment = left?.to_projective() * x + right?.to_projective() * y;
+    commitment
+        .to_affine()
+        .coordinates()
+        .map(Into::into)
+        .ok_or_else(|| {
+            ragu_core::Error::Initialization("constant-one bridge hash is not finite".into())
+        })
+}
 
 /// Step admission checks for the stamp's epoch and nonempty tachygram set.
 fn enforce_stamp_domain<'dr, D: Driver<'dr, F = pasta::Fp>>(
@@ -42,16 +70,7 @@ fn enforce_stamp_domain<'dr, D: Driver<'dr, F = pasta::Fp>>(
     epoch: &Element<'dr, D>,
     bridge_hash: &[Element<'dr, D>; 2],
 ) -> ragu_core::Result<()> {
-    let generator = *Pasta::host_generators(pasta::baked())
-        .g()
-        .first()
-        .ok_or_else(|| ragu_core::Error::InvalidWitness("fixed generator table is empty".into()))?;
-    let (low, high) = PROOF_SYSTEM
-        .bridge_hash(generator)?
-        .coordinates()
-        .ok_or_else(|| {
-            ragu_core::Error::InvalidWitness("bridge hash must not be the identity point".into())
-        })?;
+    let [low, high] = *EMPTY_STAMP_BRIDGE_HASH;
     let low_element = Element::constant(dr, low);
     let high_element = Element::constant(dr, high);
     let equal_low = bridge_hash[0].is_equal(dr, &mut (), &low_element)?;
@@ -120,6 +139,12 @@ fn make_app() -> Result<Application<'static, Pasta, ProductionRank, HEADER_SIZE>
 }
 
 lazy_static! {
+    /// Fixed by the baked parameters and production rank, independently of PCD setup.
+    static ref EMPTY_STAMP_BRIDGE_HASH: [pasta::Fp; 2] = {
+        #[expect(clippy::expect_used, reason = "the fixed setup has finite bridge generators")]
+        empty_stamp_bridge_hash(pasta::baked()).expect("valid constant-one bridge hash")
+    };
+
     /// A static ref to the mock ragu application.
     pub static ref PROOF_SYSTEM: Application<'static, Pasta, ProductionRank, HEADER_SIZE> = {
         #[expect(
@@ -128,4 +153,33 @@ lazy_static! {
         )]
         make_app().expect("registration of fixed step list must succeed")
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use ragu_core::drivers::emulator::Emulator;
+    use udon::field::Field as _;
+
+    use super::*;
+
+    #[test]
+    fn empty_stamp_bridge_hash_matches_application() {
+        let prepared = empty_stamp_bridge_hash(pasta::baked()).unwrap();
+        assert_eq!(*EMPTY_STAMP_BRIDGE_HASH, prepared);
+
+        // Exercise synthesis without witness values before using the application.
+        let mut counter = Emulator::counter();
+        let epoch = Element::constant(&mut counter, pasta::Fp::ZERO);
+        let hash = prepared.map(|value| Element::constant(&mut counter, value));
+        enforce_stamp_domain(&mut counter, &epoch, &hash).unwrap();
+
+        let commitment = PROOF_SYSTEM.commit(&[pasta::Fp::ONE]).unwrap();
+        let expected: [pasta::Fp; 2] = PROOF_SYSTEM
+            .bridge_hash(commitment)
+            .unwrap()
+            .coordinates()
+            .unwrap()
+            .into();
+        assert_eq!(prepared, expected);
+    }
 }
