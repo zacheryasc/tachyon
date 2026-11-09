@@ -80,7 +80,8 @@ fn enforce_stamp_domain<'dr, D: Driver<'dr, F = pasta::Fp>>(
         .element()
         .enforce_zero(dr)
         .map_err(|_err| ragu_core::Error::InvalidWitness("invalid anchor step".into()))?;
-    bounded::<D, 32>(dr, epoch, u64::from(EPOCH_MAX))
+    bounded::<D, 32>(dr, epoch, u64::from(EPOCH_MAX))?;
+    Ok(())
 }
 
 /// Eight payload elements for QR split, selection and bucket headers, plus one
