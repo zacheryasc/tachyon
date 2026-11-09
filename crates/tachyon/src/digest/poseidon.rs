@@ -22,9 +22,13 @@ use ragu_primitives::{
     poseidon::{Sponge, SpongeState},
     vec::FixedVec,
 };
-use udon::field::Field as _;
+use udon::{curve::Affine as _, field::Field as _};
 
-use crate::{constants::EVIDENCE_TREE_ARITY, pasta, pasta::Fp};
+use crate::{
+    constants::EVIDENCE_TREE_ARITY,
+    pasta,
+    pasta::{EpAffine, Fp},
+};
 
 #[expect(
     clippy::expect_used,
@@ -250,13 +254,24 @@ pub fn nullifier_group(mk: Fp, epoch_start: Fp) -> [Fp; PoseidonFp::RATE] {
 
 const ANCHOR_STAMP_DOMAIN: &[u8; 16] = b"Tachyon-AnchorSt";
 
-/// Advances the anchor with the stamp's epoch and tachygram-set bridge hash.
+/// Advances the anchor with the stamp's epoch and tachygram-set bridge hash,
+/// absorbing the point's affine coordinates.
+///
+/// # Panics
+///
+/// Panics if `stamp_hash` is the identity.
 #[must_use]
-pub fn anchor_next_stamp(anchor_prev: Fp, epoch: Fp, stamp_hash: [Fp; 2]) -> Fp {
+#[expect(clippy::expect_used, reason = "a bridge hash is never the identity")]
+pub fn anchor_next_stamp(anchor_prev: Fp, epoch: Fp, stamp_hash: EpAffine) -> Fp {
+    let coordinates = <[Fp; 2]>::from(
+        stamp_hash
+            .coordinates()
+            .expect("bridge hash must not be the identity point"),
+    );
     *emulate(|driver| {
         let anchor_element = Element::constant(driver, anchor_prev);
         let epoch_element = Element::constant(driver, epoch);
-        let bridge_hash = stamp_hash.map(|value| Element::constant(driver, value));
+        let bridge_hash = coordinates.map(|value| Element::constant(driver, value));
         with_driver::anchor_next_stamp(driver, &anchor_element, &epoch_element, &bridge_hash)
     })
     .value()
@@ -266,8 +281,14 @@ pub fn anchor_next_stamp(anchor_prev: Fp, epoch: Fp, stamp_hash: [Fp; 2]) -> Fp 
 const QR_BUCKET_DOMAIN: &[u8; 16] = b"Tachyon-QrBucket";
 const EVIDENCE_NODE_DOMAIN: &[u8; 16] = b"Tachyon-EvidNode";
 
-/// Digests a sealed bucket's metadata and contents bridge hash into a leaf.
+/// Digests a sealed bucket's metadata and contents bridge hash into a leaf,
+/// absorbing the point's affine coordinates.
+///
+/// # Panics
+///
+/// Panics if `contents` is the identity.
 #[must_use]
+#[expect(clippy::expect_used, reason = "a bridge hash is never the identity")]
 pub fn evidence_tree_leaf(
     epoch: Fp,
     anchor_start: Fp,
@@ -275,8 +296,13 @@ pub fn evidence_tree_leaf(
     discriminant: Fp,
     depth: Fp,
     bits: Fp,
-    contents: [Fp; 2],
+    contents: EpAffine,
 ) -> Fp {
+    let coordinates = <[Fp; 2]>::from(
+        contents
+            .coordinates()
+            .expect("bridge hash must not be the identity point"),
+    );
     *emulate(|driver| {
         let epoch_element = Element::constant(driver, epoch);
         let start_element = Element::constant(driver, anchor_start);
@@ -284,7 +310,7 @@ pub fn evidence_tree_leaf(
         let discriminant_element = Element::constant(driver, discriminant);
         let depth_element = Element::constant(driver, depth);
         let bits_element = Element::constant(driver, bits);
-        let bridge_hash = contents.map(|value| Element::constant(driver, value));
+        let bridge_hash = coordinates.map(|value| Element::constant(driver, value));
         with_driver::evidence_tree_leaf(
             driver,
             &epoch_element,

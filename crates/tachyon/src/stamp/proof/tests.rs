@@ -10,7 +10,7 @@ use udon::{
 use super::{
     super::{Tachygram, TachygramSetPoly},
     EMPTY_STAMP_BRIDGE_HASH, TachygramSetCommit, enforce_stamp_domain, new_application,
-    pasta::{Eq, Fp},
+    pasta::{EpAffine, Eq, Fp},
 };
 
 #[test]
@@ -18,9 +18,8 @@ fn native_bridge_hash_matches_application() {
     let prepared = *EMPTY_STAMP_BRIDGE_HASH;
     let mut counter = Emulator::counter();
     let epoch = Element::constant(&mut counter, Fp::ZERO);
-    let hash = prepared
-        .as_ref()
-        .map(|value| Element::constant(&mut counter, value));
+    let hash =
+        <[Fp; 2]>::from(prepared.coordinates()).map(|value| Element::constant(&mut counter, value));
     enforce_stamp_domain(&mut counter, &epoch, &hash).unwrap();
 
     let application = new_application().unwrap();
@@ -30,13 +29,10 @@ fn native_bridge_hash_matches_application() {
         TachygramSetPoly::from_iter([Tachygram::from(Fp::from(3)), Tachygram::from(Fp::from(19))])
             .commit(),
     ] {
-        let expected: [Fp; 2] = application
+        let expected = application
             .bridge_hash(commitment.as_ref().to_affine())
-            .unwrap()
-            .coordinates()
-            .unwrap()
-            .into();
-        assert_eq!(*commitment.bridge().unwrap().as_ref(), expected);
+            .unwrap();
+        assert_eq!(EpAffine::from(commitment.bridge().unwrap()), expected);
     }
     assert_eq!(TachygramSetCommit::default().bridge().unwrap(), prepared);
     assert_matches!(
