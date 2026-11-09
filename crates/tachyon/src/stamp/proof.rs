@@ -3,8 +3,8 @@
 //! Registers all PCD step types and provides accumulator helpers for
 //! stamp construction and verification.
 //!
-//! `Step::INDEX` runs from zero without gaps, and [`make_app`] registers the
-//! steps in that order; `ApplicationBuilder` rejects any other sequence.
+//! `Step::INDEX` runs from zero without gaps, and [`new_application`] registers
+//! the steps in that order; `ApplicationBuilder` rejects any other sequence.
 //! `Header::SUFFIX` runs from zero without gaps too.
 //!
 //! A step is named "noun + verb", where the noun is the header it **emits**,
@@ -27,42 +27,20 @@ pub mod spendable;
 pub mod stamp;
 pub mod summary;
 
+use alloc::boxed::Box;
+use core::mem;
+
 use lazy_static::lazy_static;
-use ragu::{Application, ApplicationBuilder, RegistryTags};
-use ragu_circuits::{polynomials::ProductionRank, staging::wire_degree};
-use ragu_core::{Cycle, FixedGenerators as _, drivers::Driver, pasta::Pasta};
-use ragu_primitives::{ENDOSCALAR_BITS, ENDOSCALAR_PRODUCTS, Element};
-use udon::curve::{Affine, Projective as _};
+use ragu::{Application, ApplicationBuilder, RegistryTags, step::Step};
+use ragu_circuits::polynomials::ProductionRank;
+use ragu_core::{drivers::Driver, pasta::Pasta};
+use ragu_primitives::Element;
+use udon::curve::Projective as _;
 
-use crate::{constants::EPOCH_MAX, pasta, relations::arithmetic::bounded};
-
-/// Prepares the constant-one commitment's bridge hash without an application.
-fn empty_stamp_bridge_hash(params: &<Pasta as Cycle>::Params) -> ragu_core::Result<[pasta::Fp; 2]> {
-    let (x, y) = Pasta::host_generators(params)
-        .g()
-        .first()
-        .and_then(Affine::coordinates)
-        .ok_or_else(|| {
-            ragu_core::Error::Initialization("constant-one commitment is not finite".into())
-        })?;
-    // The bridge point follows the hoisted endoscalar's bits and products,
-    // starting at the next reserved gate (two stage wires per gate).
-    let first_wire = (ENDOSCALAR_BITS + ENDOSCALAR_PRODUCTS).next_multiple_of(2);
-    let generators = Pasta::nested_generators(params).g();
-    let [left, right] = [first_wire, first_wire + 1].map(|wire| {
-        generators
-            .get(wire_degree::<ProductionRank>(wire))
-            .ok_or_else(|| ragu_core::Error::Initialization("bridge generator is missing".into()))
-    });
-    let commitment = left?.to_projective() * x + right?.to_projective() * y;
-    commitment
-        .to_affine()
-        .coordinates()
-        .map(Into::into)
-        .ok_or_else(|| {
-            ragu_core::Error::Initialization("constant-one bridge hash is not finite".into())
-        })
-}
+use crate::{
+    constants::EPOCH_MAX, digest::poseidon, pasta, primitives::TachygramSetCommit,
+    relations::arithmetic::bounded,
+};
 
 /// Step admission checks for the stamp's epoch and nonempty tachygram set.
 fn enforce_stamp_domain<'dr, D: Driver<'dr, F = pasta::Fp>>(
@@ -87,99 +65,78 @@ fn enforce_stamp_domain<'dr, D: Driver<'dr, F = pasta::Fp>>(
 /// suffix element.
 pub const HEADER_SIZE: usize = 9;
 
-fn make_app() -> Result<Application<'static, Pasta, ProductionRank, HEADER_SIZE>, ragu_core::Error>
-{
+/// Builds the Tachyon application with the baked setup and fixed registry tags.
+///
+/// # Errors
+///
+/// Returns an error if step registration or application finalization fails.
+pub fn new_application()
+-> Result<Box<Application<'static, Pasta, ProductionRank, HEADER_SIZE>>, ragu_core::Error> {
     // Registry tags use the fixed Tachyon beacon and configuration digest.
     let manifest = blake2b_simd::Params::new()
         .hash_length(32)
         .hash(b"Tachyon PCD: Pasta, R13, H9, steps 0..38, ragu a73db816");
     let tags = RegistryTags::<Pasta>::from_beacon(b"Tachyon registry beacon", manifest.as_bytes());
-    ApplicationBuilder::<Pasta, ProductionRank, HEADER_SIZE>::new()
-        .with_registry_tags(tags, manifest.as_bytes())?
-        .register(delegation::NoteSeed)?
-        .register(delegation::NullifierDerive)?
-        .register(pool::UnspentFuse)?
-        .register(pool::UnspentBind)?
-        .register(spendable::SpendableInit)?
-        .register(spendable::SpendableLift)?
-        .register(output::OutputBind)?
-        .register(stamp::OutputAction)?
-        .register(spend::SpendBind)?
-        .register(stamp::SpendAction)?
-        .register(stamp::StampMerge)?
-        .register(stamp::StampLift)?
-        .register(delegation::NullifierFuse)?
-        .register(summary::SummarySeed)?
-        .register(summary::SummaryAdvance)?
-        .register(qr::QrSummaryIntake)?
-        .register(qr::QrIntakeMerge)?
-        .register(qr::QrIntakeSplit)?
-        .register(qr::QrSideDescend)?
-        .register(qr::QrUnspentInit)?
-        .register(qr::QrBucketSeal)?
-        .register(qr::QrStampIntakeSeed)?
-        .register(spendable::QrSpendableInit)?
-        .register(qr::QrEmptyIntakeSeed)?
-        .register(pool::UnspentLift)?
-        .register(evidence::EvidenceTreePairFuse)?
-        .register(evidence::EvidenceTreeFuse)?
-        .register(evidence::EvidenceTreeCap)?
-        .register(evidence::EvidenceTreeDescend)?
-        .register(evidence::EvidenceTreeOpen)?
-        .register(evidence::EvidenceTreeLeafPair)?
-        .register(pool::AnchorSpanSeed)?
-        .register(pool::AnchorSpanFuse)?
-        .register(stamp::FeeFuse)?
-        .register(stamp::ActionMerge)?
-        .register(stamp::ActionLift)?
-        .register(stamp::FeeSeed)?
-        .register(stamp::StampUnmerge)?
-        .register(qr::QrSideSelect)?
-        .finalize(pasta::baked())
+    let mut builder = ApplicationBuilder::<Pasta, ProductionRank, HEADER_SIZE>::new()
+        .with_registry_tags(tags, manifest.as_bytes())?;
+    register_step(&mut builder, delegation::NoteSeed)?;
+    register_step(&mut builder, delegation::NullifierDerive)?;
+    register_step(&mut builder, pool::UnspentFuse)?;
+    register_step(&mut builder, pool::UnspentBind)?;
+    register_step(&mut builder, spendable::SpendableInit)?;
+    register_step(&mut builder, spendable::SpendableLift)?;
+    register_step(&mut builder, output::OutputBind)?;
+    register_step(&mut builder, stamp::OutputAction)?;
+    register_step(&mut builder, spend::SpendBind)?;
+    register_step(&mut builder, stamp::SpendAction)?;
+    register_step(&mut builder, stamp::StampMerge)?;
+    register_step(&mut builder, stamp::StampLift)?;
+    register_step(&mut builder, delegation::NullifierFuse)?;
+    register_step(&mut builder, summary::SummarySeed)?;
+    register_step(&mut builder, summary::SummaryAdvance)?;
+    register_step(&mut builder, qr::QrSummaryIntake)?;
+    register_step(&mut builder, qr::QrIntakeMerge)?;
+    register_step(&mut builder, qr::QrIntakeSplit)?;
+    register_step(&mut builder, qr::QrSideDescend)?;
+    register_step(&mut builder, qr::QrUnspentInit)?;
+    register_step(&mut builder, qr::QrBucketSeal)?;
+    register_step(&mut builder, qr::QrStampIntakeSeed)?;
+    register_step(&mut builder, spendable::QrSpendableInit)?;
+    register_step(&mut builder, qr::QrEmptyIntakeSeed)?;
+    register_step(&mut builder, pool::UnspentLift)?;
+    register_step(&mut builder, evidence::EvidenceTreePairFuse)?;
+    register_step(&mut builder, evidence::EvidenceTreeFuse)?;
+    register_step(&mut builder, evidence::EvidenceTreeCap)?;
+    register_step(&mut builder, evidence::EvidenceTreeDescend)?;
+    register_step(&mut builder, evidence::EvidenceTreeOpen)?;
+    register_step(&mut builder, evidence::EvidenceTreeLeafPair)?;
+    register_step(&mut builder, pool::AnchorSpanSeed)?;
+    register_step(&mut builder, pool::AnchorSpanFuse)?;
+    register_step(&mut builder, stamp::FeeFuse)?;
+    register_step(&mut builder, stamp::ActionMerge)?;
+    register_step(&mut builder, stamp::ActionLift)?;
+    register_step(&mut builder, stamp::FeeSeed)?;
+    register_step(&mut builder, stamp::StampUnmerge)?;
+    register_step(&mut builder, qr::QrSideSelect)?;
+    Ok(Box::new(builder.finalize(pasta::baked())?))
+}
+
+fn register_step<S: Step<Pasta> + 'static>(
+    builder: &mut ApplicationBuilder<'static, Pasta, ProductionRank, HEADER_SIZE>,
+    step: S,
+) -> ragu_core::Result<()> {
+    *builder = mem::take(builder).register(step)?;
+    Ok(())
 }
 
 lazy_static! {
     /// Fixed by the baked parameters and production rank, independently of PCD setup.
     static ref EMPTY_STAMP_BRIDGE_HASH: [pasta::Fp; 2] = {
         #[expect(clippy::expect_used, reason = "the fixed setup has finite bridge generators")]
-        empty_stamp_bridge_hash(pasta::baked()).expect("valid constant-one bridge hash")
-    };
-
-    /// A static ref to the mock ragu application.
-    pub static ref PROOF_SYSTEM: Application<'static, Pasta, ProductionRank, HEADER_SIZE> = {
-        #[expect(
-            clippy::expect_used,
-            reason = "hardcoded step ordering must register cleanly"
-        )]
-        make_app().expect("registration of fixed step list must succeed")
+        poseidon::bridge_hash(TachygramSetCommit::default().as_ref().to_affine())
+            .expect("valid constant-one bridge hash")
     };
 }
 
 #[cfg(test)]
-mod tests {
-    use ragu_core::drivers::emulator::Emulator;
-    use udon::field::Field as _;
-
-    use super::*;
-
-    #[test]
-    fn empty_stamp_bridge_hash_matches_application() {
-        let prepared = empty_stamp_bridge_hash(pasta::baked()).unwrap();
-        assert_eq!(*EMPTY_STAMP_BRIDGE_HASH, prepared);
-
-        // Exercise synthesis without witness values before using the application.
-        let mut counter = Emulator::counter();
-        let epoch = Element::constant(&mut counter, pasta::Fp::ZERO);
-        let hash = prepared.map(|value| Element::constant(&mut counter, value));
-        enforce_stamp_domain(&mut counter, &epoch, &hash).unwrap();
-
-        let commitment = PROOF_SYSTEM.commit(&[pasta::Fp::ONE]).unwrap();
-        let expected: [pasta::Fp; 2] = PROOF_SYSTEM
-            .bridge_hash(commitment)
-            .unwrap()
-            .coordinates()
-            .unwrap()
-            .into();
-        assert_eq!(prepared, expected);
-    }
-}
+mod tests;

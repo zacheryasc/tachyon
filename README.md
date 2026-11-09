@@ -53,6 +53,20 @@ Stubbed (pending Ragu PCD and Poseidon integration):
 - Proof creation, merge, and verification
 - Stamp compression/decompression
 
+## Proof applications
+
+`zcash_tachyon::stamp::proof::new_application()` returns a boxed Ragu application
+with Tachyon's baked parameters and registry tags. Retain the owner in each
+proving or verification worker and pass `&application` before the RNG argument
+to stamp proving, lifting, merging, unmerging, compression and verification.
+Bundle lifting and proof verification take the same borrow.
+
+Wallets pass the application when proving a stamp. Aggregators retain it while
+transforming stamps. Zebra's mempool verification and miner aggregation workers
+own their applications. Bundle parsing, signing, witness preparation and native
+anchor advancement use their existing inputs. For real Ragu, keep each worker's
+application on that worker because the application is not `Sync`.
+
 ## Development
 
 Requires Rust stable (1.85+) and nightly for formatting/linting.

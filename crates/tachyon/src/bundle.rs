@@ -99,6 +99,7 @@ use core::{cmp::Ordering, iter, ops::Neg as _};
 
 use corez::io::{self, Read, Write};
 use derive_more::{Debug, Display, Eq as TotalEq, Error, From, IsVariant, PartialEq, TryInto};
+use ragu::Application;
 use ragu_circuits::polynomials::ProductionRank;
 use ragu_core::pasta::Pasta;
 use rand_core::CryptoRng;
@@ -114,7 +115,8 @@ use crate::{
     reddsa, serialization,
     stamp::{
         self, AggregateId, AggregateIdError, PointerStamp, ProofStamp, ProveError, StampProof,
-        StampState, Unproven, proof::pool,
+        StampState, Unproven,
+        proof::{HEADER_SIZE, pool},
     },
     value,
 };
@@ -641,6 +643,7 @@ impl Bundle<ProofStamp<ragu::Proof<Pasta, ProductionRank>>> {
     /// is provided, or a proof-system step fails.
     pub fn lift<RNG: CryptoRng>(
         self,
+        application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
         adjuncts: &[&Bundle<dyn StampState>],
         spans: Vec<ragu::Pcd<Pasta, ProductionRank, pool::AnchorSpan>>,
@@ -655,7 +658,7 @@ impl Bundle<ProofStamp<ragu::Proof<Pasta, ProductionRank>>> {
 
         let stamp = self
             .stamp
-            .lift(rng, &descriptors, &fee_descriptors, spans)?;
+            .lift(application, rng, &descriptors, &fee_descriptors, spans)?;
 
         Ok(Self { stamp, ..self })
     }
@@ -808,10 +811,12 @@ impl<P: StampProof> Bundle<ProofStamp<P>> {
     /// proof is reported as `Ok(false)`, not an error.
     pub fn verify_proof<RNG: CryptoRng>(
         &self,
+        application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
         action_digests: &[ActionDigest],
     ) -> Result<bool, ragu_core::Error> {
-        self.stamp.verify_proof(rng, action_digests.iter().copied())
+        self.stamp
+            .verify_proof(application, rng, action_digests.iter().copied())
     }
 
     /// Verify everything about this bundle. Does not verify any details about
@@ -830,6 +835,7 @@ impl<P: StampProof> Bundle<ProofStamp<P>> {
     /// proof is disproved.
     pub fn verify<RNG: CryptoRng>(
         &self,
+        application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
         sighash: &[u8; 32],
         wtxid: &[u8; 64],
@@ -857,7 +863,7 @@ impl<P: StampProof> Bundle<ProofStamp<P>> {
             .map_err(VerificationError::Actions)?;
 
         if self
-            .verify_proof(rng, &covered_digests)
+            .verify_proof(application, rng, &covered_digests)
             .map_err(VerificationError::Proof)?
         {
             Ok(())

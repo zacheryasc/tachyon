@@ -16,13 +16,13 @@ use core::error;
 use corez::io::{self, Read, Write};
 use derive_more::{Debug, Display, Eq as TotalEq, Error, Into, PartialEq};
 use proof::{
-    HEADER_SIZE, PROOF_SYSTEM, output,
+    HEADER_SIZE, output,
     stamp::{
         ActionLift, ActionMerge, Actions, FeeFuse, FeeSeed, OutputAction, SpendAction, Stamp,
         StampLift, StampMerge, StampUnmerge,
     },
 };
-use ragu::wire;
+use ragu::{Application, wire};
 use ragu_circuits::polynomials::{ProductionRank, Rank as _};
 use ragu_core::pasta::Pasta;
 use rand_core::CryptoRng;
@@ -264,6 +264,7 @@ pub trait StampProof: sealed::Sealed {
     /// proof is reported as `Ok(false)`, not an error.
     fn verify<RNG: CryptoRng>(
         &self,
+        application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
         header: (ActionSetCommit, TachygramSetCommit, Anchor),
     ) -> Result<bool, ragu_core::Error>;
@@ -284,6 +285,7 @@ impl StampProof for ragu::Proof<Pasta, ProductionRank> {
 
     fn verify<RNG: CryptoRng>(
         &self,
+        application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
         header: (ActionSetCommit, TachygramSetCommit, Anchor),
     ) -> Result<bool, ragu_core::Error> {
@@ -296,12 +298,12 @@ impl StampProof for ragu::Proof<Pasta, ProductionRank> {
         {
             return Ok(false);
         }
-        let compressed = match PROOF_SYSTEM.compress(&pcd, rng) {
+        let compressed = match application.compress(&pcd, rng) {
             Ok(compressed) => compressed,
             Err(ragu_core::Error::InvalidWitness(_)) => return Ok(false),
             Err(error) => return Err(error),
         };
-        PROOF_SYSTEM.verify_compressed(&compressed)
+        application.verify_compressed(&compressed)
     }
 }
 
@@ -320,6 +322,7 @@ impl StampProof for ragu::CompressedProof<Pasta> {
 
     fn verify<RNG: CryptoRng>(
         &self,
+        application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         _rng: &mut RNG,
         header: (ActionSetCommit, TachygramSetCommit, Anchor),
     ) -> Result<bool, ragu_core::Error> {
@@ -329,7 +332,7 @@ impl StampProof for ragu::CompressedProof<Pasta> {
         {
             return Ok(false);
         }
-        PROOF_SYSTEM.verify_compressed(
+        application.verify_compressed(
             &self
                 .clone()
                 .carry::<Stamp>(Stamp::header(header.1, header.2)?),
@@ -536,13 +539,17 @@ impl<P: StampProof> ProofStamp<P> {
     /// proof is reported as `Ok(false)`, not an error.
     pub fn verify_proof<RNG: CryptoRng>(
         &self,
+        application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
         action_digests: impl IntoIterator<Item = ActionDigest>,
     ) -> Result<bool, ragu_core::Error> {
         let action_set = ActionSetPoly::from_iter(action_digests);
 
-        self.proof
-            .verify(rng, (action_set.commit(), self.tachygram_set, self.anchor))
+        self.proof.verify(
+            application,
+            rng,
+            (action_set.commit(), self.tachygram_set, self.anchor),
+        )
     }
 }
 
@@ -637,6 +644,7 @@ impl Plan {
     )]
     pub fn prove<RNG: CryptoRng>(
         self,
+        application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
         pak: &ProofAuthorizingKey,
         spend_pcds: Vec<(
@@ -684,7 +692,7 @@ impl Plan {
 
             // SpendBind: derive the live pair from the note's master key and
             // commit the note's value.
-            let (bind_pcd, ()) = PROOF_SYSTEM
+            let (bind_pcd, ()) = application
                 .fuse(
                     rng,
                     spend::SpendBind,
@@ -695,10 +703,10 @@ impl Plan {
                 .map_err(ProveError::ProofFailed)?;
 
             let (digests, tachygrams, spend_anchor, spend_proof) =
-                ProofStamp::prove_spend(rng, theta, bind_pcd, *pak)?;
+                ProofStamp::prove_spend(application, rng, theta, bind_pcd, *pak)?;
             let mut stamp_pcd = spend_proof.carry::<Actions>(spend_anchor);
             for span in spans {
-                stamp_pcd = PROOF_SYSTEM
+                stamp_pcd = application
                     .fuse(rng, ActionLift, (), stamp_pcd, span)
                     .map_err(ProveError::ProofFailed)?
                     .0;
@@ -716,7 +724,7 @@ impl Plan {
 
         for (desc, theta, note, rcv) in self.outputs {
             let (digests, tachygrams, anchor, proof) =
-                ProofStamp::prove_output(rng, theta, rcv, note, self.anchor)?;
+                ProofStamp::prove_output(application, rng, theta, rcv, note, self.anchor)?;
             entries.push((
                 BTreeSet::from_iter([desc]),
                 digests,
@@ -742,7 +750,7 @@ impl Plan {
                 let merged_tachygrams: BTreeSet<Tachygram> =
                     left_tachygrams.union(&right_tachygrams).copied().collect();
 
-                let (pcd, ()) = PROOF_SYSTEM
+                let (pcd, ()) = application
                     .fuse(
                         rng,
                         ActionMerge,
@@ -769,7 +777,7 @@ impl Plan {
             .transpose()?
         {
             None => {
-                let (pcd, ()) = PROOF_SYSTEM
+                let (pcd, ()) = application
                     .seed(
                         rng,
                         FeeSeed,
@@ -779,7 +787,7 @@ impl Plan {
                 (pcd, BTreeSet::new(), BTreeSet::new())
             },
             Some((descriptors, digests, tachygrams, anchor, merged_proof)) => {
-                let (pcd, ()) = PROOF_SYSTEM
+                let (pcd, ()) = application
                     .fuse(
                         rng,
                         FeeFuse,
@@ -791,14 +799,14 @@ impl Plan {
                             &tachygrams,
                         ),
                         merged_proof.carry::<Actions>(anchor),
-                        PROOF_SYSTEM.bootstrap_proof().clone().carry::<()>(()),
+                        application.bootstrap_proof().clone().carry::<()>(()),
                     )
                     .map_err(ProveError::ProofFailed)?;
                 (pcd, descriptors, tachygrams)
             },
         };
 
-        let (proof, (_, anchor)) = PROOF_SYSTEM
+        let (proof, (_, anchor)) = application
             .rerandomize(pcd, rng)
             .map_err(ProveError::ProofFailed)?
             .into_parts();
@@ -893,6 +901,7 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
         reason = "the digests, tachygrams, anchor and proof of one stamp"
     )]
     fn prove_output<RNG: CryptoRng>(
+        application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
         theta: ActionEntropy,
         rcv: value::Trapdoor,
@@ -914,7 +923,7 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
         )
         .map_err(ProveError::ActionDigest)?;
 
-        let (bind_pcd, ()) = PROOF_SYSTEM
+        let (bind_pcd, ()) = application
             .seed(
                 rng,
                 output::OutputBind,
@@ -924,13 +933,13 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
         let (cm, pad, _cv) = *bind_pcd.data();
         let tachygrams = BTreeSet::from_iter([cm, pad]);
 
-        let (pcd, ()) = PROOF_SYSTEM
+        let (pcd, ()) = application
             .fuse(
                 rng,
                 OutputAction,
                 witness::output_action((*bind_pcd.data(), ()), theta, anchor),
                 bind_pcd,
-                PROOF_SYSTEM.bootstrap_proof().clone().carry::<()>(()),
+                application.bootstrap_proof().clone().carry::<()>(()),
             )
             .map_err(ProveError::ProofFailed)?;
 
@@ -964,6 +973,7 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
         reason = "the digests, tachygrams, anchor and proof of one stamp"
     )]
     fn prove_spend<RNG: CryptoRng>(
+        application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
         theta: ActionEntropy,
         bind_pcd: ragu::Pcd<Pasta, ProductionRank, spend::SpendHeader>,
@@ -985,13 +995,13 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
         let tachygrams =
             BTreeSet::from_iter([Tachygram::from(nf_current), Tachygram::from(nf_next)]);
 
-        let (pcd, ()) = PROOF_SYSTEM
+        let (pcd, ()) = application
             .fuse(
                 rng,
                 SpendAction,
                 witness::spend_action((*bind_pcd.data(), ()), theta, pak),
                 bind_pcd,
-                PROOF_SYSTEM.bootstrap_proof().clone().carry::<()>(()),
+                application.bootstrap_proof().clone().carry::<()>(()),
             )
             .map_err(ProveError::ProofFailed)?;
 
@@ -1024,6 +1034,7 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
         reason = "the digests, tachygrams, anchor and proof of each stamp"
     )]
     fn prove_merge<RNG: CryptoRng>(
+        application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
         (left_digests, left_tachygrams, left_anchor, left_proof): (
             BTreeSet<ActionDigest>,
@@ -1064,7 +1075,7 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
         let tachygrams: BTreeSet<Tachygram> =
             left_tachygrams.union(&right_tachygrams).copied().collect();
 
-        let (pcd, ()) = PROOF_SYSTEM.fuse(
+        let (pcd, ()) = application.fuse(
             rng,
             StampMerge,
             witness::stamp_merge(
@@ -1094,6 +1105,7 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
     /// - [`ProveError::ProofFailed`] if a proof-system step fails.
     fn prove_lift<RNG: CryptoRng>(
         self,
+        application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
         action_digests: impl IntoIterator<Item = ActionDigest>,
         spans: Vec<ragu::Pcd<Pasta, ProductionRank, pool::AnchorSpan>>,
@@ -1115,13 +1127,13 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
             )));
         }
         for span in spans {
-            stamp_pcd = PROOF_SYSTEM
+            stamp_pcd = application
                 .fuse(rng, StampLift, (), stamp_pcd, span)
                 .map_err(ProveError::ProofFailed)?
                 .0;
         }
         let anchor = stamp_pcd.data().1;
-        let proof = PROOF_SYSTEM
+        let proof = application
             .rerandomize(stamp_pcd, rng)
             .map_err(ProveError::ProofFailed)?
             .proof()
@@ -1146,6 +1158,7 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
     /// is provided, or a proof-system step fails.
     pub fn lift<RNG: CryptoRng>(
         self,
+        application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
         descriptors: &BTreeSet<action::Descriptor>,
         fee_descriptors: &BTreeSet<fee::Descriptor>,
@@ -1158,7 +1171,7 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
             .collect::<Result<BTreeSet<ActionDigest>, ActionDigestError>>()
             .map_err(ProveError::ActionDigest)?;
 
-        self.prove_lift(rng, action_digests, spans)
+        self.prove_lift(application, rng, action_digests, spans)
     }
 
     /// Merges two stamps into one covering stamp.
@@ -1179,6 +1192,7 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
     /// proof-system step fails.
     pub fn merge<RNG: CryptoRng>(
         self,
+        application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
         (left_desc, left_fees): (BTreeSet<action::Descriptor>, BTreeSet<fee::Descriptor>),
         (right_stamp, right_desc, right_fees): (
@@ -1201,6 +1215,7 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
             .map_err(ProveError::ActionDigest)?;
 
         let (_, tachygrams, anchor, merged_proof) = Self::prove_merge(
+            application,
             rng,
             (
                 left_actions_digest,
@@ -1238,7 +1253,7 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
             .copied()
             .collect::<TachygramSetPoly>()
             .commit();
-        let proof = PROOF_SYSTEM
+        let proof = application
             .rerandomize(
                 merged_proof.carry::<Stamp>(
                     Stamp::header(tachygram_set, anchor).map_err(ProveError::ProofFailed)?,
@@ -1276,6 +1291,7 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
     /// proof-system step fails.
     pub fn unmerge<RNG: CryptoRng>(
         self,
+        application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
         (desc, fees): (BTreeSet<action::Descriptor>, BTreeSet<fee::Descriptor>),
         (divisor_stamp, divisor_desc, divisor_fees): (
@@ -1323,7 +1339,7 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
                 .map_err(ProveError::ProofFailed)?,
         );
 
-        let (pcd, ()) = PROOF_SYSTEM
+        let (pcd, ()) = application
             .fuse(
                 rng,
                 StampUnmerge,
@@ -1350,7 +1366,7 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
         );
 
         let anchor = pcd.data().1;
-        let proof = PROOF_SYSTEM
+        let proof = application
             .rerandomize(pcd, rng)
             .map_err(ProveError::ProofFailed)?
             .proof()
@@ -1374,6 +1390,7 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
     /// proof-system compression fails.
     pub fn compress<RNG: CryptoRng>(
         self,
+        application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
         descriptors: &BTreeSet<action::Descriptor>,
         fee_descriptors: &BTreeSet<fee::Descriptor>,
@@ -1396,7 +1413,7 @@ impl ProofStamp<ragu::Proof<Pasta, ProductionRank>> {
                 "stamp output sets do not match the public sets".into(),
             )));
         }
-        let (compressed, _) = PROOF_SYSTEM
+        let (compressed, _) = application
             .compress(&pcd, rng)
             .map_err(ProveError::ProofFailed)?
             .into_parts();

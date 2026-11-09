@@ -8,8 +8,9 @@
 //! $\mathsf{tag}$, the 16-byte domain read as a little-endian integer. It
 //! absorbs only its data. Every Tachyon Poseidon hash is tagged this way.
 
+use ragu_circuits::{polynomials::ProductionRank, staging::wire_degree};
 use ragu_core::{
-    Cycle as _, PoseidonPermutation as _, Result,
+    Cycle as _, FixedGenerators as _, PoseidonPermutation as _, Result,
     drivers::{
         Driver,
         emulator::{Emulator, Wireless},
@@ -18,7 +19,7 @@ use ragu_core::{
     pasta::{Pasta, PoseidonFp},
 };
 use ragu_primitives::{
-    Element,
+    ENDOSCALAR_BITS, ENDOSCALAR_PRODUCTS, Element,
     poseidon::{Sponge, SpongeState},
     vec::FixedVec,
 };
@@ -32,7 +33,6 @@ use crate::{
     pasta,
     pasta::{EqAffine, Fp},
     primitives::TachygramSetCommit,
-    stamp::proof::PROOF_SYSTEM,
 };
 
 #[expect(
@@ -265,8 +265,20 @@ const ANCHOR_STAMP_DOMAIN: &[u8; 16] = b"Tachyon-AnchorSt";
 ///
 /// Fails if the commitment or its bridge hash is the identity.
 pub fn bridge_hash(commitment: EqAffine) -> Result<[Fp; 2]> {
-    let coordinates = PROOF_SYSTEM
-        .bridge_hash(commitment)?
+    let (x, y) = commitment.coordinates().ok_or_else(|| {
+        ragu_core::Error::InvalidWitness("cannot hash the identity commitment".into())
+    })?;
+    // Two stage wires per gate follow the hoisted endoscalar's bits and products.
+    let first_wire = (ENDOSCALAR_BITS + ENDOSCALAR_PRODUCTS).next_multiple_of(2);
+    let generators = Pasta::nested_generators(pasta::baked()).g();
+    let [left, right] = [first_wire, first_wire + 1].map(|wire| {
+        generators
+            .get(wire_degree::<ProductionRank>(wire))
+            .ok_or_else(|| ragu_core::Error::Initialization("bridge generator is missing".into()))
+    });
+    let hash = left?.to_projective() * x + right?.to_projective() * y;
+    let coordinates = hash
+        .to_affine()
         .coordinates()
         .ok_or_else(|| ragu_core::Error::InvalidWitness("bridge hash is the identity".into()))?;
     Ok(coordinates.into())
