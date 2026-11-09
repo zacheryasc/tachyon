@@ -3,16 +3,16 @@ extern crate alloc;
 use alloc::{collections::BTreeMap, vec, vec::Vec};
 use core::{cell::RefCell, iter, mem, ops::RangeInclusive};
 
-use ragu::{
-    Application,
-    header::Header,
-    step::{Encoded, HeaderInput, Index, Oracles, Step},
-};
 use ragu_circuits::polynomials::{ProductionRank, Rank as _};
 use ragu_core::{
     PoseidonPermutation as _,
     drivers::{Driver, DriverValue},
     pasta::{Pasta, PoseidonFp},
+};
+use ragu_pcd::{
+    Application,
+    header::Header,
+    step::{Encoded, HeaderInput, Index, Oracles, Step},
 };
 use rand::{SeedableRng as _, rngs::StdRng};
 use rand_core::CryptoRng;
@@ -253,7 +253,7 @@ pub fn forge_overlapping_merge<RNG: CryptoRng>(
         &Vec<action::Descriptor>,
         &[fee::Descriptor],
     ),
-) -> ragu::Pcd<Pasta, ProductionRank, Stamp> {
+) -> ragu_pcd::Pcd<Pasta, ProductionRank, Stamp> {
     let left_tg = stamp_a
         .tachygrams
         .iter()
@@ -476,7 +476,7 @@ pub(crate) fn build_anchor_span_pcd<RNG: CryptoRng>(
     pool: &PoolSim,
     range: RangeInclusive<BlockHeight>,
 ) -> (
-    ragu::Pcd<Pasta, ProductionRank, pool::AnchorSpan>,
+    ragu_pcd::Pcd<Pasta, ProductionRank, pool::AnchorSpan>,
     Vec<Anchor>,
 ) {
     let start = *range.start();
@@ -485,7 +485,7 @@ pub(crate) fn build_anchor_span_pcd<RNG: CryptoRng>(
     assert!(start <= end);
 
     let mut state = pool.block(start).prev;
-    let mut span: Option<ragu::Pcd<Pasta, ProductionRank, pool::AnchorSpan>> = None;
+    let mut span: Option<ragu_pcd::Pcd<Pasta, ProductionRank, pool::AnchorSpan>> = None;
     let mut members = Vec::new();
     let mut height = start;
     loop {
@@ -532,17 +532,17 @@ pub(crate) fn build_lift_span<RNG: CryptoRng>(
     rng: &mut RNG,
     pool: &PoolSim,
     range: RangeInclusive<BlockHeight>,
-) -> ragu::Pcd<Pasta, ProductionRank, pool::AnchorSpan> {
+) -> ragu_pcd::Pcd<Pasta, ProductionRank, pool::AnchorSpan> {
     build_anchor_span_pcd(application, rng, pool, range).0
 }
 
 pub(crate) struct QrIntakeEntry {
-    pub pcd: ragu::Pcd<Pasta, ProductionRank, qr::QrIntake>,
+    pub pcd: ragu_pcd::Pcd<Pasta, ProductionRank, qr::QrIntake>,
     pub members: Vec<Tachygram>,
 }
 
 pub(crate) struct QrBucketEntry {
-    pub pcd: ragu::Pcd<Pasta, ProductionRank, qr::QrBucket>,
+    pub pcd: ragu_pcd::Pcd<Pasta, ProductionRank, qr::QrBucket>,
     pub members: Vec<Tachygram>,
 }
 
@@ -775,7 +775,7 @@ pub(crate) struct EvidenceLeaf {
 }
 
 pub(crate) struct EvidenceTreeEntry {
-    pub pcd: ragu::Pcd<Pasta, ProductionRank, evidence::EvidenceTree>,
+    pub pcd: ragu_pcd::Pcd<Pasta, ProductionRank, evidence::EvidenceTree>,
     pub leaves: Vec<EvidenceLeaf>,
 }
 
@@ -912,7 +912,7 @@ pub(crate) fn build_evidence_tree<RNG: CryptoRng>(
 pub(crate) fn open_evidence_tree<RNG: CryptoRng>(
     application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
     rng: &mut RNG,
-    tree: ragu::Pcd<Pasta, ProductionRank, evidence::EvidenceTree>,
+    tree: ragu_pcd::Pcd<Pasta, ProductionRank, evidence::EvidenceTree>,
     leaf: &EvidenceLeaf,
 ) -> QrBucketEntry {
     let mut node = tree;
@@ -1057,7 +1057,7 @@ pub(crate) fn qr_epoch_unspent<RNG: CryptoRng>(
     user: &WalletSim,
     note: &Note,
     bucket: &QrBucketEntry,
-) -> ragu::Pcd<Pasta, ProductionRank, pool::NoteUnspent> {
+) -> ragu_pcd::Pcd<Pasta, ProductionRank, pool::NoteUnspent> {
     let arbitrary = qr_bucket_segment(application, rng, bucket, |epoch| {
         user.pak
             .nk
@@ -1072,7 +1072,7 @@ pub(crate) fn qr_bucket_segment<RNG: CryptoRng>(
     rng: &mut RNG,
     bucket: &QrBucketEntry,
     nf: impl Fn(EpochIndex) -> Nullifier,
-) -> ragu::Pcd<Pasta, ProductionRank, pool::ArbitraryUnspent> {
+) -> ragu_pcd::Pcd<Pasta, ProductionRank, pool::ArbitraryUnspent> {
     let (epoch, ..) = *bucket.pcd.data();
     let witness = witness::qr_unspent_init((*bucket.pcd.data(), ()), nf(epoch).into());
     let (segment, ()) = application
@@ -1093,7 +1093,7 @@ pub(crate) fn build_unspent_pcd_over_epochs<RNG: CryptoRng>(
     pool: &PoolSim,
     nf: impl Fn(EpochIndex) -> Nullifier,
     (epoch_start, epoch_next): (EpochIndex, EpochIndex),
-) -> ragu::Pcd<Pasta, ProductionRank, pool::ArbitraryUnspent> {
+) -> ragu_pcd::Pcd<Pasta, ProductionRank, pool::ArbitraryUnspent> {
     assert!(u32::from(epoch_start) < u32::from(epoch_next));
     let mut segments = Vec::new();
     for epoch in (u32::from(epoch_start)..u32::from(epoch_next)).map(EpochIndex::new) {
@@ -1111,8 +1111,8 @@ fn fuse_unspent_tree<RNG: CryptoRng>(
     rng: &mut RNG,
     nf: &[Nullifier],
     base: EpochIndex,
-    mut chains: Vec<ragu::Pcd<Pasta, ProductionRank, pool::ArbitraryUnspent>>,
-) -> ragu::Pcd<Pasta, ProductionRank, pool::ArbitraryUnspent> {
+    mut chains: Vec<ragu_pcd::Pcd<Pasta, ProductionRank, pool::ArbitraryUnspent>>,
+) -> ragu_pcd::Pcd<Pasta, ProductionRank, pool::ArbitraryUnspent> {
     assert!(!chains.is_empty());
     if chains.len() == 1 {
         return chains.pop().unwrap();
@@ -1147,11 +1147,11 @@ pub struct WalletSim {
     pub pak: ProofAuthorizingKey,
     pub notes: RefCell<BTreeMap<u64, StdRng>>,
     pub secrets:
-        RefCell<BTreeMap<Tachygram, ragu::Pcd<Pasta, ProductionRank, delegation::NoteSecret>>>,
+        RefCell<BTreeMap<Tachygram, ragu_pcd::Pcd<Pasta, ProductionRank, delegation::NoteSecret>>>,
     pub derivations: RefCell<
         BTreeMap<
             (Tachygram, u32, u32),
-            ragu::Pcd<Pasta, ProductionRank, delegation::NoteNullifiers>,
+            ragu_pcd::Pcd<Pasta, ProductionRank, delegation::NoteNullifiers>,
         >,
     >,
 }
@@ -1198,7 +1198,7 @@ impl WalletSim {
     pub fn covering_window(
         &self,
         note: &Note,
-        range: &ragu::Pcd<Pasta, ProductionRank, delegation::NoteNullifiers>,
+        range: &ragu_pcd::Pcd<Pasta, ProductionRank, delegation::NoteNullifiers>,
     ) -> Vec<Nullifier> {
         let (_, start, last) = *range.data();
         let mk = self.pak.nk.derive_note_private(note.psi);
@@ -1212,7 +1212,7 @@ impl WalletSim {
         application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
         note: Note,
-    ) -> ragu::Pcd<Pasta, ProductionRank, delegation::NoteSecret> {
+    ) -> ragu_pcd::Pcd<Pasta, ProductionRank, delegation::NoteSecret> {
         let cm = Tachygram::from(note.commitment());
         if let Some(pcd) = self.secrets.borrow().get(&cm) {
             return pcd.clone();
@@ -1236,7 +1236,7 @@ impl WalletSim {
         note: Note,
         epoch_start: EpochIndex,
         epoch_end: EpochIndex,
-    ) -> ragu::Pcd<Pasta, ProductionRank, delegation::NoteNullifiers> {
+    ) -> ragu_pcd::Pcd<Pasta, ProductionRank, delegation::NoteNullifiers> {
         let base = u32::from(epoch_start) - u32::from(epoch_start) % PoseidonFp::RATE as u32;
         let windows = (u32::from(epoch_end) - base + 1).div_ceil(NF_DERIVATION_WIDTH as u32);
         let cover_end = base + windows * NF_DERIVATION_WIDTH as u32 - 1;
@@ -1247,7 +1247,8 @@ impl WalletSim {
         let secret = self.secret_pcd(application, rng, note);
         let mk = self.pak.nk.derive_note_private(note.psi);
 
-        let mut merged: Option<ragu::Pcd<Pasta, ProductionRank, delegation::NoteNullifiers>> = None;
+        let mut merged: Option<ragu_pcd::Pcd<Pasta, ProductionRank, delegation::NoteNullifiers>> =
+            None;
         for window in 0..windows {
             let chunk_start = EpochIndex::new(base + window * NF_DERIVATION_WIDTH as u32);
             let chunk_end =
@@ -1300,7 +1301,7 @@ impl WalletSim {
         note: &Note,
         pool: &PoolSim,
         init_height: BlockHeight,
-    ) -> ragu::Pcd<Pasta, ProductionRank, spendable::NoteSpendable> {
+    ) -> ragu_pcd::Pcd<Pasta, ProductionRank, spendable::NoteSpendable> {
         let cm = note.commitment();
         let epoch = init_height.epoch();
         let (anchor_prev, creation_tgs) = {
@@ -1341,9 +1342,9 @@ impl WalletSim {
         &self,
         application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
-        arbitrary: ragu::Pcd<Pasta, ProductionRank, pool::ArbitraryUnspent>,
+        arbitrary: ragu_pcd::Pcd<Pasta, ProductionRank, pool::ArbitraryUnspent>,
         note: &Note,
-    ) -> ragu::Pcd<Pasta, ProductionRank, pool::NoteUnspent> {
+    ) -> ragu_pcd::Pcd<Pasta, ProductionRank, pool::NoteUnspent> {
         let (_, epoch_start, epoch_next, _) = *arbitrary.data();
         let range = self.derivation_pcd(application, rng, *note, epoch_start, epoch_next);
         let mk = self.pak.nk.derive_note_private(note.psi);
@@ -1370,10 +1371,10 @@ impl WalletSim {
         &self,
         application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
-        spendable: ragu::Pcd<Pasta, ProductionRank, spendable::NoteSpendable>,
-        arbitrary: ragu::Pcd<Pasta, ProductionRank, pool::ArbitraryUnspent>,
+        spendable: ragu_pcd::Pcd<Pasta, ProductionRank, spendable::NoteSpendable>,
+        arbitrary: ragu_pcd::Pcd<Pasta, ProductionRank, pool::ArbitraryUnspent>,
         note: &Note,
-    ) -> ragu::Pcd<Pasta, ProductionRank, spendable::NoteSpendable> {
+    ) -> ragu_pcd::Pcd<Pasta, ProductionRank, spendable::NoteSpendable> {
         let unspent = self.unspent_bind(application, rng, arbitrary, note);
         let (lifted, ()) = application
             .fuse(rng, spendable::SpendableLift, (), spendable, unspent)
@@ -1387,9 +1388,9 @@ impl WalletSim {
         rng: &mut RNG,
         pool: &PoolSim,
         note: &Note,
-        spendable: ragu::Pcd<Pasta, ProductionRank, spendable::NoteSpendable>,
+        spendable: ragu_pcd::Pcd<Pasta, ProductionRank, spendable::NoteSpendable>,
         target: EpochIndex,
-    ) -> ragu::Pcd<Pasta, ProductionRank, spendable::NoteSpendable> {
+    ) -> ragu_pcd::Pcd<Pasta, ProductionRank, spendable::NoteSpendable> {
         let (_, epoch, _) = *spendable.data();
         let mk = self.pak.nk.derive_note_private(note.psi);
         if epoch == target {
@@ -1412,7 +1413,7 @@ impl WalletSim {
         pool: &PoolSim,
         note: &Note,
         target: EpochIndex,
-    ) -> ragu::Pcd<Pasta, ProductionRank, spendable::NoteSpendable> {
+    ) -> ragu_pcd::Pcd<Pasta, ProductionRank, spendable::NoteSpendable> {
         let creation_height = pool
             .history
             .iter()
@@ -1443,7 +1444,7 @@ impl WalletSim {
         anchor: Anchor,
         spends: Vec<(
             Note,
-            ragu::Pcd<Pasta, ProductionRank, spendable::NoteSpendable>,
+            ragu_pcd::Pcd<Pasta, ProductionRank, spendable::NoteSpendable>,
         )>,
         output_notes: Vec<Note>,
     ) -> Bundle<ProofStamp<stamp::Uncompressed>> {
@@ -1463,7 +1464,7 @@ impl WalletSim {
         rng: &mut RNG,
         spends: Vec<(
             Note,
-            ragu::Pcd<Pasta, ProductionRank, spendable::NoteSpendable>,
+            ragu_pcd::Pcd<Pasta, ProductionRank, spendable::NoteSpendable>,
         )>,
         output_notes: Vec<Note>,
         max_fee_note: Note,
@@ -1471,9 +1472,9 @@ impl WalletSim {
         bundle::Plan,
         Bundle<Unproven>,
         Vec<(
-            ragu::Pcd<Pasta, ProductionRank, delegation::NoteSecret>,
-            ragu::Pcd<Pasta, ProductionRank, spendable::NoteSpendable>,
-            Vec<ragu::Pcd<Pasta, ProductionRank, pool::AnchorSpan>>,
+            ragu_pcd::Pcd<Pasta, ProductionRank, delegation::NoteSecret>,
+            ragu_pcd::Pcd<Pasta, ProductionRank, spendable::NoteSpendable>,
+            Vec<ragu_pcd::Pcd<Pasta, ProductionRank, pool::AnchorSpan>>,
         )>,
     ) {
         let ask = self.sk.derive_auth_private();
@@ -1521,9 +1522,9 @@ impl WalletSim {
         bundle::Plan,
         Bundle<Unproven>,
         Vec<(
-            ragu::Pcd<Pasta, ProductionRank, delegation::NoteSecret>,
-            ragu::Pcd<Pasta, ProductionRank, spendable::NoteSpendable>,
-            Vec<ragu::Pcd<Pasta, ProductionRank, pool::AnchorSpan>>,
+            ragu_pcd::Pcd<Pasta, ProductionRank, delegation::NoteSecret>,
+            ragu_pcd::Pcd<Pasta, ProductionRank, spendable::NoteSpendable>,
+            Vec<ragu_pcd::Pcd<Pasta, ProductionRank, pool::AnchorSpan>>,
         )>,
         Anchor,
         Note,

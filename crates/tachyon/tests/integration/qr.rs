@@ -3,13 +3,13 @@ extern crate alloc;
 use alloc::{string::ToString as _, vec, vec::Vec};
 use core::{array, assert_matches, iter, mem};
 
-use ragu::{
-    header::Header,
-    step::{Encoded, HeaderInput, Index, Oracles, Step},
-};
 use ragu_core::{
     drivers::{Driver, DriverValue},
     pasta::Pasta,
+};
+use ragu_pcd::{
+    header::Header,
+    step::{Encoded, HeaderInput, Index, Oracles, Step},
 };
 use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
 use udon::{curve::Projective as _, field::Field as _};

@@ -31,9 +31,9 @@ use alloc::boxed::Box;
 use core::mem;
 
 use lazy_static::lazy_static;
-use ragu::{Application, ApplicationBuilder, RegistryTags, step::Step};
 use ragu_circuits::polynomials::ProductionRank;
 use ragu_core::{drivers::Driver, pasta::Pasta};
+use ragu_pcd::{Application, ApplicationBuilder, RegistryTags, step::Step};
 use ragu_primitives::Element;
 
 use crate::{

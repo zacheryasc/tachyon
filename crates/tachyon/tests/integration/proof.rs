@@ -3,9 +3,9 @@ extern crate alloc;
 use alloc::{string::ToString as _, vec, vec::Vec};
 use core::{array, assert_matches, iter};
 
-use ragu::Application;
 use ragu_circuits::polynomials::ProductionRank;
 use ragu_core::pasta::Pasta;
+use ragu_pcd::Application;
 use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
 use udon::{curve::Projective as _, field::Field as _};
 use zcash_tachyon::{
@@ -51,7 +51,7 @@ fn detached_segment(
     rng: &mut StdRng,
     epoch: EpochIndex,
     nf: impl Fn(EpochIndex) -> Nullifier,
-) -> ragu::Pcd<Pasta, ProductionRank, pool::ArbitraryUnspent> {
+) -> ragu_pcd::Pcd<Pasta, ProductionRank, pool::ArbitraryUnspent> {
     let anchor_final_prev = Anchor::random(rng);
     let discriminant = zcash_tachyon::QrDiscriminant::random(rng);
     let intake = seed_qr_empty_intake(
@@ -70,8 +70,8 @@ fn honest_spend_bind(
     rng: &mut StdRng,
     user: &WalletSim,
     note: &Note,
-    spendable: ragu::Pcd<Pasta, ProductionRank, spendable::NoteSpendable>,
-) -> ragu::Pcd<Pasta, ProductionRank, spend::SpendHeader> {
+    spendable: ragu_pcd::Pcd<Pasta, ProductionRank, spendable::NoteSpendable>,
+) -> ragu_pcd::Pcd<Pasta, ProductionRank, spend::SpendHeader> {
     let secret_pcd = user.secret_pcd(application, rng, *note);
     let rcv = value::Trapdoor::random(rng);
     let (bind_pcd, ()) = application
