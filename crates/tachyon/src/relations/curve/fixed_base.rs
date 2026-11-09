@@ -252,7 +252,7 @@ fn recode<const N: usize>(offset: [bool; N]) -> [bool; N] {
     windows
 }
 
-/// Encodes the odd representative $K \in \{r, r-q\}$ via
+/// Encodes the odd representative $K \in \\{r, r-q\\}$ via
 /// $t = (K + 2^{255} - 1)/2$. Odd $r$ gives $\lfloor r/2 \rfloor + 2^{254}$;
 /// even $r$ gives $(r-1)/2 + 2^{254} \bmod q$, whose canonical reduction is
 /// the required $t$ below $q$.
