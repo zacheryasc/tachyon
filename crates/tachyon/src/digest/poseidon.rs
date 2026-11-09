@@ -61,8 +61,8 @@ fn tagged_sponge<'dr, D: Driver<'dr, F = Fp>, const L: usize>(
 
 const FEE_BLIND_DOMAIN: &[u8; 16] = b"Tachyon-FeeBlind";
 
-/// A max fee note's value commitment blind,
-/// $r = \mathsf{Poseidon}_\texttt{Tachyon-FeeBlind}(\mathsf{pk}, \psi,
+/// The digest a max fee note's value commitment blind decodes from,
+/// $h = \mathsf{Poseidon}_\texttt{Tachyon-FeeBlind}(\mathsf{pk}, \psi,
 /// \mathsf{rcm})$.
 #[must_use]
 pub fn fee_blind(pk: Fp, psi: Fp, rcm: Fp) -> Fp {

@@ -29,6 +29,7 @@ pub mod witness;
 mod arithmetic;
 mod collections;
 mod primitives;
+mod radix8;
 mod relations;
 mod serialization;
 
