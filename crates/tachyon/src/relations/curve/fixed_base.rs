@@ -1,140 +1,25 @@
-//! Signed odd-digit radix-8 fixed-base multiplication.
+//! Fixed-base multiplication: shared affine adders for the [`unsigned`]
+//! walks.
 //!
-//! Window $i$ reads bits $(s, m, n)$ as $(2s - 1)(1 + 2m + 4n)$, using
-//! [`crate::radix8::DIGITS`]. A $W$-window walk computes $[\mathit{k}]B + C$
-//! for $k = \sum_i d_i 8^i$. Every prefix $A_j$ is odd and satisfies
-//! $|A_j| \le 8^j - 1 < |d_j|8^j$ and $|A_j| + |d_j|8^j < 8^{j+1}$.
-//! For $j + 1 \le 84$ this is below $q$, so interior operands have distinct x
-//! coordinates and every prefix is finite. The last addition is complete,
-//! including the inverse and doubling cases at $W = 85$.
-//!
-//! Free blind bits bind some scalar opening. Hash-derived scalars keep the
-//! canonical 255-bit comparator: $h + p$ recomposes to $h$ but reads
-//! differently under [`crate::radix8::fp_to_fq`]. Amount digits bind $2v + 1$
-//! with a pinned top digit $+1$; the walk over $[1/2]B$ subtracts $[1/2]B$ to
-//! compute $[\mathit{v}]B$.
+//! The incomplete adder is sound only where the caller proves distinct x
+//! coordinates for every Boolean assignment. The finite-input adder is
+//! complete for finite operands.
 
-use alloc::vec::Vec;
 use core::array;
 
 use ragu_core::{
     Error, Result,
-    drivers::{Coeff, Driver, DriverValue},
+    drivers::{Coeff, Driver},
     maybe::Maybe as _,
 };
-use ragu_primitives::{
-    Boolean, Element, GadgetExt as _, Point,
-    vec::{ConstLen, FixedVec},
-};
-use udon::{
-    curve::{Affine as _, Projective as _},
-    field::Field as _,
-};
+use ragu_primitives::{Boolean, Element};
+use udon::field::Field as _;
 
-use super::{super::arithmetic, CompletePoint};
-use crate::{
-    pasta::{Ep, EpAffine, Fp, Fq},
-    radix8::DIGITS,
-};
-
-pub(crate) struct Table<const W: usize> {
-    // Native constant storage only. Circuit iteration is bounded by const W.
-    rows: Vec<[(Fp, Fp); 4]>,
-    correction: Option<(Fp, Fp)>,
-}
-
-/// Rows hold the positive digits from [`DIGITS`] times $[8^i]B$.
-/// A corrected walk uses $W \le 84$ and joins its finite correction completely.
-#[expect(
-    clippy::expect_used,
-    reason = "fixed table entries and corrections must be finite"
-)]
-pub(crate) fn table<const W: usize>(base: Ep, correction: Option<Ep>) -> Table<W> {
-    const {
-        assert!(W > 1 && W <= 85, "the signed-walk bound covers W=2..85");
-    }
-    assert!(!base.is_identity(), "fixed bases must be nonidentity");
-    assert!(
-        W <= 84 || correction.is_none(),
-        "corrected walks keep digit additions incomplete"
-    );
-    let mut power = Fq::ONE;
-    let mut rows = Vec::with_capacity(W);
-    let [_, one, _, three, _, five, _, seven] = DIGITS;
-    for _ in 0..W {
-        rows.push([one, three, five, seven].map(|digit| {
-            let magnitude = u64::from(digit.unsigned_abs());
-            (base * (Fq::from(magnitude) * power))
-                .to_affine()
-                .coordinates()
-                .expect("fixed signed entries must be finite")
-        }));
-        power *= Fq::from(8);
-    }
-    let correction_coordinates = correction.map(|point| {
-        point
-            .to_affine()
-            .coordinates()
-            .expect("fixed corrections must be finite")
-    });
-    Table {
-        rows,
-        correction: correction_coordinates,
-    }
-}
-
-/// Walks $2v + 1$ over $[1/2]B$, then subtracts $[1/2]B$ and adds `correction`.
-/// The fixed top $+1$ contributes $[8^W/2]B$ to the final correction.
-#[expect(clippy::expect_used, reason = "two is invertible in Fq")]
-pub(crate) fn amount_table<const W: usize>(base: Ep, correction: Ep) -> Table<W> {
-    const {
-        assert!(W > 1 && W <= 84, "corrected walks cover W=2..84");
-    }
-    let half = base * Fq::from(2).invert().expect("two is invertible");
-    let mut power = Fq::ONE;
-    for _ in 0..W {
-        power *= Fq::from(8);
-    }
-    let offset = half * (power - Fq::ONE);
-    table(half, Some(offset + correction))
-}
+use super::{super::super::pasta::Fp, CompletePoint};
 
 struct Finite<'dr, D: Driver<'dr>> {
     x: Element<'dr, D>,
     y: Element<'dr, D>,
-}
-
-/// Two gates share $mn$ between both coordinates and apply the sign to $y$.
-fn select<'dr, D: Driver<'dr, F = Fp>>(
-    dr: &mut D,
-    row: &[(Fp, Fp); 4],
-    bits: [&Boolean<'dr, D>; 3],
-) -> Result<Finite<'dr, D>> {
-    let [sign, low, high] = bits;
-    let product = low.element().mul(dr, &high.element())?;
-    let bilinear = |driver: &mut D, values: [Fp; 4]| {
-        let mut out = Element::constant(driver, values[0]);
-        for (element, coefficient) in [
-            (low.element(), values[1] - values[0]),
-            (high.element(), values[2] - values[0]),
-            (
-                product.clone(),
-                values[3] - values[2] - values[1] + values[0],
-            ),
-        ] {
-            let term = element.scale(driver, Coeff::Arbitrary(coefficient));
-            out = out.add(driver, &term);
-        }
-        out
-    };
-    let x = bilinear(dr, row.map(|pair| pair.0));
-    let unsigned_y = bilinear(dr, row.map(|pair| pair.1));
-    let signum = sign
-        .element()
-        .scale(dr, Coeff::Arbitrary(Fp::from(2)))
-        .sub(dr, &Element::one());
-    let y = signum.mul(dr, &unsigned_y)?;
-    Ok(Finite { x, y })
 }
 
 /// Pins slope and its square in two gates. Caller proves denominator nonzero.
@@ -165,64 +50,40 @@ fn slope<'dr, D: Driver<'dr, F = Fp>>(
     Ok((slope, square))
 }
 
-/// Computes the signed sum with incomplete interior additions: the prefix
-/// bound excludes equal and inverse operands. The final finite-input join is
-/// complete. Digest bits require a canonical decomposition; blind bits are
-/// free.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "const assertions fix N = 3 * W; table constructs W rows"
-)]
-pub(crate) fn walk<'dr, D: Driver<'dr, F = Fp>, const W: usize, const N: usize>(
+/// Three-gate incomplete addition. Caller proves distinct x coordinates.
+fn add_incomplete<'dr, D: Driver<'dr, F = Fp>>(
     dr: &mut D,
-    table: &Table<W>,
-    bits: &FixedVec<Boolean<'dr, D>, ConstLen<N>>,
+    accumulator: &Finite<'dr, D>,
+    digit: &Finite<'dr, D>,
+) -> Result<Finite<'dr, D>> {
+    let numerator = digit.y.sub(dr, &accumulator.y);
+    let denominator = digit.x.sub(dr, &accumulator.x);
+    let (slope, square) = slope(dr, &numerator, &denominator)?;
+    let x = square.sub(dr, &accumulator.x).sub(dr, &digit.x);
+    let difference = accumulator.x.sub(dr, &x);
+    let y = slope.mul(dr, &difference)?.sub(dr, &accumulator.y);
+    Ok(Finite { x, y })
+}
+
+/// Eleven-gate finite-input addition. Equal x selects the doubling slope;
+/// 2y is nonzero on this odd-prime-order curve. Inverses set the identity
+/// flag, whose placeholder coordinates are ignored by complete joins.
+fn add_finite<'dr, D: Driver<'dr, F = Fp>>(
+    dr: &mut D,
+    accumulator: &Finite<'dr, D>,
+    operand: &Finite<'dr, D>,
 ) -> Result<CompletePoint<'dr, D>> {
-    const {
-        assert!(W > 1 && W <= 85, "the signed-walk bound covers W=2..85");
-        assert!(N == 3 * W, "the bit width must match the fixed-base table");
-    }
-    let window = |driver: &mut D, index: usize| {
-        select(
-            driver,
-            &table.rows[index],
-            [&bits[3 * index], &bits[3 * index + 1], &bits[3 * index + 2]],
-        )
-    };
-    let mut accumulator = window(dr, 0)?;
-    let incomplete = if table.correction.is_some() { W } else { W - 1 };
-    for index in 1..incomplete {
-        let digit = window(dr, index)?;
-        // Three gates; the signed-prefix bound excludes a zero denominator.
-        let numerator = digit.y.sub(dr, &accumulator.y);
-        let denominator = digit.x.sub(dr, &accumulator.x);
-        let (slope, square) = slope(dr, &numerator, &denominator)?;
-        let x = square.sub(dr, &accumulator.x).sub(dr, &digit.x);
-        let difference = accumulator.x.sub(dr, &x);
-        let y = slope.mul(dr, &difference)?.sub(dr, &accumulator.y);
-        accumulator = Finite { x, y };
-    }
-    let last = match table.correction {
-        Some((x, y)) => Finite {
-            x: Element::constant(dr, x),
-            y: Element::constant(dr, y),
-        },
-        None => window(dr, W - 1)?,
-    };
-    // Eleven-gate finite-input addition. Equal x selects the doubling slope;
-    // 2y is nonzero on this odd-prime-order curve. Inverses set the identity
-    // flag, whose placeholder coordinates are ignored by complete joins.
-    let same_x = accumulator.x.is_equal(dr, &mut (), &last.x)?;
-    let same_y = accumulator.y.is_equal(dr, &mut (), &last.y)?;
+    let same_x = accumulator.x.is_equal(dr, &mut (), &operand.x)?;
+    let same_y = accumulator.y.is_equal(dr, &mut (), &operand.y)?;
     let square = accumulator.x.square(dr)?;
     let double_numerator = square.scale(dr, Coeff::Arbitrary(Fp::from(3)));
-    let add_numerator = last.y.sub(dr, &accumulator.y);
+    let add_numerator = operand.y.sub(dr, &accumulator.y);
     let numerator = same_x.conditional_select(dr, &add_numerator, &double_numerator)?;
     let double_denominator = accumulator.y.double(dr);
-    let add_denominator = last.x.sub(dr, &accumulator.x);
+    let add_denominator = operand.x.sub(dr, &accumulator.x);
     let denominator = same_x.conditional_select(dr, &add_denominator, &double_denominator)?;
     let (slope, slope_square) = slope(dr, &numerator, &denominator)?;
-    let x = slope_square.sub(dr, &accumulator.x).sub(dr, &last.x);
+    let x = slope_square.sub(dr, &accumulator.x).sub(dr, &operand.x);
     let difference = accumulator.x.sub(dr, &x);
     let y = slope.mul(dr, &difference)?.sub(dr, &accumulator.y);
     let not_same_y = same_y.not(dr);
@@ -230,145 +91,149 @@ pub(crate) fn walk<'dr, D: Driver<'dr, F = Fp>, const W: usize, const N: usize>(
     Ok(CompletePoint { x, y, infinity })
 }
 
-/// Recodes unsigned windows $t$ as signed windows summing to $2t - (8^W - 1)$.
-fn recode<const N: usize>(offset: [bool; N]) -> [bool; N] {
-    const {
-        assert!(N.is_multiple_of(3), "signed windows have three bits");
-    }
-    let mut windows = [false; N];
-    for (
-        &[low, middle, high],
-        &mut [ref mut sign, ref mut magnitude_low, ref mut magnitude_high],
-    ) in offset
-        .as_chunks::<3>()
-        .0
-        .iter()
-        .zip(windows.as_chunks_mut::<3>().0.iter_mut())
-    {
-        *sign = high;
-        *magnitude_low = low == high;
-        *magnitude_high = middle == high;
-    }
-    windows
-}
-
-/// Encodes the odd representative $K \in \\{r, r-q\\}$ via
-/// $t = (K + 2^{255} - 1)/2$. Odd $r$ gives $\lfloor r/2 \rfloor + 2^{254}$;
-/// even $r$ gives $(r-1)/2 + 2^{254} \bmod q$, whose canonical reduction is
-/// the required $t$ below $q$.
+/// Multilinear coefficients of a function on $\{0, 1\}^3$, indexed by the bit
+/// mask of each monomial.
 #[expect(
-    clippy::expect_used,
     clippy::indexing_slicing,
-    reason = "two is invertible; Fq has a 256-bit representation"
+    reason = "the Möbius transform indexes a fixed eight-entry array"
 )]
-fn encode(scalar: Fq) -> [bool; 255] {
-    let bits = scalar.to_le_bits();
-    let offset = if bits.as_ref()[0] {
-        array::from_fn(|index| index == 254 || bits.as_ref()[index + 1])
-    } else {
-        let half = Fq::from(2).invert().expect("two is invertible");
-        let even = (scalar - Fq::ONE) * half + Fq::from(2).pow_u64(254);
-        let even_bits = even.to_le_bits();
-        array::from_fn(|index| even_bits.as_ref()[index])
-    };
-    recode(offset)
+fn monomials(mut values: [Fp; 8]) -> [Fp; 8] {
+    for dimension in 0..3 {
+        for index in 0..8 {
+            if index & (1 << dimension) != 0 {
+                values[index] -= values[index ^ (1 << dimension)];
+            }
+        }
+    }
+    values
 }
 
-/// Free opening advice for a blind whose integer encoding is otherwise unbound.
-#[expect(clippy::indexing_slicing, reason = "encode returns 255 bits")]
-pub(crate) fn free_bits<'dr, D: Driver<'dr, F = Fp>>(
+/// Two-gate selection of one of eight fixed points by three little-endian
+/// bits $b_0, b_1, b_2$.
+///
+/// $q = x_{012} y - y_{012} x$ has no $b_0 b_1 b_2$ term, where $x_S, y_S$ are
+/// the coordinates' multilinear coefficients. The first gate realizes $q$'s
+/// quadratic part as $p = (b_0 + \beta b_2)(q_{01} b_1 + q_{02} b_2)$; the
+/// second is $c = b_2 (\lambda_0 b_0 + \lambda_1 b_1 + \rho p)$, which matches
+/// $x$'s cubic and $b_0 b_2, b_1 b_2$ terms up to multiples of $q$. Both
+/// coordinates are then affine in $(b_0, b_1, b_2, p, c)$. Construction checks
+/// all eight entries, so selection is exact on every Boolean assignment.
+pub(super) struct Window {
+    left: [Fp; 3],
+    right: [Fp; 3],
+    inner: [Fp; 3],
+    x: [Fp; 6],
+    y: [Fp; 6],
+}
+
+impl Window {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "fixed eight-entry cube and six-term basis"
+    )]
+    #[expect(
+        clippy::expect_used,
+        reason = "fixed tables must admit two-gate selection"
+    )]
+    pub(super) fn new(entries: &[(Fp, Fp); 8]) -> Self {
+        let x = monomials(entries.map(|entry| entry.0));
+        let y = monomials(entries.map(|entry| entry.1));
+        let [q01, q02, q12] = [3, 5, 6].map(|mask| x[7] * y[mask] - y[7] * x[mask]);
+        let inverse = q01
+            .invert()
+            .expect("q must have a b0 b1 term in a fixed window");
+        let shift = x[3] * inverse;
+        let rho = x[7] * inverse;
+        let left = [Fp::ONE, Fp::ZERO, q12 * inverse];
+        let right = [Fp::ZERO, q01, q02];
+        let inner = [x[5] - (shift + rho) * q02, x[6] - (shift + rho) * q12, rho];
+
+        let bit = |index: usize, position: usize| Fp::from(u64::from(index & (1 << position) != 0));
+        let linear = |coefficients: &[Fp; 3], terms: [Fp; 3]| {
+            coefficients
+                .iter()
+                .zip(terms)
+                .fold(Fp::ZERO, |sum, (coefficient, term)| {
+                    sum + *coefficient * term
+                })
+        };
+        let basis: [[Fp; 6]; 8] = array::from_fn(|index| {
+            let bits = [bit(index, 0), bit(index, 1), bit(index, 2)];
+            let quadratic = linear(&left, bits) * linear(&right, bits);
+            let cubic = bits[2] * linear(&inner, [bits[0], bits[1], quadratic]);
+            [Fp::ONE, bits[0], bits[1], bits[2], quadratic, cubic]
+        });
+        let quadratic = monomials(basis.map(|row| row[4]));
+        let cubic = monomials(basis.map(|row| row[5]));
+        let cubic_inverse = cubic[7]
+            .invert()
+            .expect("x must have a b0 b1 b2 term in a fixed window");
+        let quadratic_inverse = quadratic[3]
+            .invert()
+            .expect("p must have a b0 b1 term in a fixed window");
+        let solve = |coordinate: [Fp; 8]| {
+            let gamma = coordinate[7] * cubic_inverse;
+            let alpha = (coordinate[3] - gamma * cubic[3]) * quadratic_inverse;
+            let rest =
+                |mask: usize| coordinate[mask] - alpha * quadratic[mask] - gamma * cubic[mask];
+            [rest(0), rest(1), rest(2), rest(4), alpha, gamma]
+        };
+        let window = Self {
+            left,
+            right,
+            inner,
+            x: solve(x),
+            y: solve(y),
+        };
+        for (row, entry) in basis.iter().zip(*entries) {
+            let evaluate = |coefficients: &[Fp; 6]| {
+                coefficients
+                    .iter()
+                    .zip(row)
+                    .fold(Fp::ZERO, |sum, (coefficient, term)| {
+                        sum + *coefficient * *term
+                    })
+            };
+            assert_eq!(
+                (evaluate(&window.x), evaluate(&window.y)),
+                entry,
+                "two-gate selection must reproduce every fixed entry"
+            );
+        }
+        window
+    }
+}
+
+fn combine<'dr, D: Driver<'dr, F = Fp>, const N: usize>(
     dr: &mut D,
-    value: &DriverValue<D, Fq>,
-) -> Result<FixedVec<Boolean<'dr, D>, ConstLen<255>>> {
-    let encoded = value.as_ref().map(|candidate| encode(*candidate));
-    FixedVec::try_from_fn(|index| {
-        Boolean::alloc(dr, &mut (), encoded.as_ref().map(|windows| windows[index]))
+    coefficients: &[Fp; N],
+    elements: [&Element<'dr, D>; N],
+) -> Element<'dr, D> {
+    let mut sum = Element::zero(dr);
+    for (element, coefficient) in elements.into_iter().zip(coefficients) {
+        sum = sum.add_coeff(dr, element, Coeff::Arbitrary(*coefficient));
+    }
+    sum
+}
+
+/// Selects a window's entry in two gates. Caller supplies Boolean bits.
+fn select<'dr, D: Driver<'dr, F = Fp>>(
+    dr: &mut D,
+    window: &Window,
+    bits: [&Boolean<'dr, D>; 3],
+) -> Result<Finite<'dr, D>> {
+    let [low, middle, high] = bits.map(Boolean::element);
+    let left = combine(dr, &window.left, [&low, &middle, &high]);
+    let right = combine(dr, &window.right, [&low, &middle, &high]);
+    let quadratic = left.mul(dr, &right)?;
+    let inner = combine(dr, &window.inner, [&low, &middle, &quadratic]);
+    let cubic = high.mul(dr, &inner)?;
+    let one = Element::one();
+    let basis = [&one, &low, &middle, &high, &quadratic, &cubic];
+    Ok(Finite {
+        x: combine(dr, &window.x, basis),
+        y: combine(dr, &window.y, basis),
     })
 }
 
-/// Allocates $W$ signed windows by recoding $v$'s unsigned bits and pins
-/// $2v + 1 = 8^W + \sum_{i<W} d_i 8^i$ through [`enforce_amount_digits`].
-#[expect(
-    clippy::indexing_slicing,
-    reason = "enforce_amount_digits bounds N below the field width"
-)]
-pub(crate) fn amount_digits<'dr, D: Driver<'dr, F = Fp>, const W: usize, const N: usize>(
-    dr: &mut D,
-    value: &Element<'dr, D>,
-) -> Result<FixedVec<Boolean<'dr, D>, ConstLen<N>>> {
-    let windows = value.value().map(|candidate| {
-        let bits = candidate.to_le_bits();
-        recode::<N>(array::from_fn(|index| bits.as_ref()[index]))
-    });
-    let bits = FixedVec::<_, ConstLen<N>>::try_from_fn(|index| {
-        Boolean::alloc(dr, &mut (), windows.as_ref().map(|all| all[index]))
-    })?;
-    enforce_amount_digits::<D, W, N>(dr, value, &bits)?;
-    Ok(bits)
-}
-
-/// Pins $2v + 1 = 8^W + \sum_{i<W} d_i 8^i$. The pinned top $+1$ bounds
-/// the right side to odd integers in $[1, 2^{N+1})$, below $p$ for
-/// $N=3W\le252$. Since $2$ is invertible, recomposition pins $v \in [0, 2^N)$
-/// in $\mathbb{F}_p$.
-#[expect(clippy::indexing_slicing, reason = "const assertions fix N = 3 * W")]
-fn enforce_amount_digits<'dr, D: Driver<'dr, F = Fp>, const W: usize, const N: usize>(
-    dr: &mut D,
-    value: &Element<'dr, D>,
-    bits: &FixedVec<Boolean<'dr, D>, ConstLen<N>>,
-) -> Result<()> {
-    const {
-        assert!(W > 0 && W <= 84, "amount recomposition covers W=1..84");
-        assert!(N == 3 * W, "the bit width must match the signed windows");
-    }
-    let mut sum = Element::zero(dr);
-    let mut power = Fp::ONE;
-    for window in 0..W {
-        let low = bits[3 * window + 1]
-            .element()
-            .scale(dr, Coeff::Arbitrary(Fp::from(2)));
-        let high = bits[3 * window + 2]
-            .element()
-            .scale(dr, Coeff::Arbitrary(Fp::from(4)));
-        let magnitude = Element::one().add(dr, &low).add(dr, &high);
-        let positive = bits[3 * window].element().mul(dr, &magnitude)?;
-        let digit = positive.double(dr).sub(dr, &magnitude);
-        let term = digit.scale(dr, Coeff::Arbitrary(power));
-        sum = sum.add(dr, &term);
-        power *= Fp::from(8);
-    }
-    let top = Element::constant(dr, power);
-    sum = sum.add(dr, &top);
-    let odd = value.double(dr).add(dr, &Element::one());
-    sum.enforce_equal(dr, &odd)
-}
-
-/// Pins $v$ and its $N$-bit slack below the caller's public
-/// $\mathit{maximum}<2^N$.
-pub(crate) fn bounded_amount<'dr, D: Driver<'dr, F = Fp>, const W: usize, const N: usize>(
-    dr: &mut D,
-    value: &Element<'dr, D>,
-    maximum: u64,
-) -> Result<FixedVec<Boolean<'dr, D>, ConstLen<N>>> {
-    let digits = amount_digits::<D, W, N>(dr, value)?;
-    let maximum_element = Element::constant(dr, Fp::from(maximum));
-    let slack = maximum_element.sub(dr, value);
-    arithmetic::bits::<D, N>(dr, &slack)?;
-    Ok(digits)
-}
-
-pub(crate) fn commitment<'dr, D: Driver<'dr, F = Fp>, const W: usize, const N: usize>(
-    dr: &mut D,
-    value_table: &Table<W>,
-    blind_table: &Table<85>,
-    amount: &FixedVec<Boolean<'dr, D>, ConstLen<N>>,
-    blind: &FixedVec<Boolean<'dr, D>, ConstLen<255>>,
-) -> Result<Point<'dr, D, EpAffine>> {
-    let product = walk(dr, value_table, amount)?;
-    let blind_point = walk(dr, blind_table, blind)?;
-    let sum = super::add_complete(dr, &product, &blind_point)?;
-    super::finish(dr, &sum)
-}
-
-#[cfg(test)]
-mod tests;
+pub(crate) mod unsigned;
