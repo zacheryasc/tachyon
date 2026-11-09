@@ -868,9 +868,10 @@ impl Step<Pasta> for FeeFuse {
         })?;
         let bound = Element::constant(dr, Fp::from(MAX_MONEY));
         let slack = bound.sub(dr, &maximum);
-        let slack_digits = curve::fixed_base::amount_digits(dr, &slack).map_err(|_err| {
-            ragu_core::Error::InvalidWitness("FeeFuse: maximum fee exceeds MAX_MONEY".into())
-        })?;
+        let slack_digits =
+            curve::fixed_base::amount_digits::<D, 17, 51>(dr, &slack).map_err(|_err| {
+                ragu_core::Error::InvalidWitness("FeeFuse: maximum fee exceeds MAX_MONEY".into())
+            })?;
         let pk = Element::alloc(
             dr,
             &mut (),

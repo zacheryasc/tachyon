@@ -115,7 +115,7 @@ impl Step<Pasta> for OutputBind {
                 .as_ref()
                 .map(|data| Fp::from(u64::from(data.0.value))),
         )?;
-        let amount_digits = curve::fixed_base::bounded_amount(dr, &amount, MAX_MONEY)?;
+        let amount_digits = curve::fixed_base::bounded_amount::<D, 17, 51>(dr, &amount, MAX_MONEY)?;
         let rcm = Element::alloc(
             dr,
             &mut (),

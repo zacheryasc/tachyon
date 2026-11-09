@@ -1,17 +1,18 @@
 //! Signed odd-digit radix-8 fixed-base multiplication.
 //!
-//! Window i reads bits (s, m, n) as (2s - 1)(1 + 2m + 4n), using
-//! [`crate::radix8::DIGITS`]. A W-window walk computes `[k]B + C` for
-//! k = Σ d_i 8^i. Every prefix A_j is odd and satisfies
-//! |A_j| <= 8^j - 1 < |d_j|8^j and |A_j| + |d_j|8^j < 8^(j+1).
-//! For j + 1 <= 84 this is below q, so interior operands have distinct x
+//! Window $i$ reads bits $(s, m, n)$ as $(2s - 1)(1 + 2m + 4n)$, using
+//! [`crate::radix8::DIGITS`]. A $W$-window walk computes $[\mathit{k}]B + C$
+//! for $k = \sum_i d_i 8^i$. Every prefix $A_j$ is odd and satisfies
+//! $|A_j| \le 8^j - 1 < |d_j|8^j$ and $|A_j| + |d_j|8^j < 8^{j+1}$.
+//! For $j + 1 \le 84$ this is below $q$, so interior operands have distinct x
 //! coordinates and every prefix is finite. The last addition is complete,
-//! including the inverse and doubling cases at W = 85.
+//! including the inverse and doubling cases at $W = 85$.
 //!
 //! Free blind bits bind some scalar opening. Hash-derived scalars keep the
-//! canonical 255-bit comparator: h + p recomposes to h but reads differently
-//! under [`crate::radix8::fp_to_fq`]. Amount digits bind 2v + 1 with a pinned
-//! top digit +1; the walk over `[1/2]B` subtracts `[1/2]B` to compute `[v]B`.
+//! canonical 255-bit comparator: $h + p$ recomposes to $h$ but reads
+//! differently under [`crate::radix8::fp_to_fq`]. Amount digits bind $2v + 1$
+//! with a pinned top digit $+1$; the walk over $[1/2]B$ subtracts $[1/2]B$ to
+//! compute $[\mathit{v}]B$.
 
 use alloc::vec::Vec;
 use core::array;
@@ -42,8 +43,8 @@ pub(crate) struct Table<const W: usize> {
     correction: Option<(Fp, Fp)>,
 }
 
-/// Rows hold the positive digits from [`DIGITS`] times [8^i]B.
-/// A corrected walk uses W <= 84 and joins its finite correction completely.
+/// Rows hold the positive digits from [`DIGITS`] times $[8^i]B$.
+/// A corrected walk uses $W \le 84$ and joins its finite correction completely.
 #[expect(
     clippy::expect_used,
     reason = "fixed table entries and corrections must be finite"
@@ -82,12 +83,19 @@ pub(crate) fn table<const W: usize>(base: Ep, correction: Option<Ep>) -> Table<W
     }
 }
 
-/// Walks 2v + 1 over `[1/2]B`, then subtracts `[1/2]B` and adds `correction`.
-/// The fixed top +1 contributes `[8^17/2]B` to the final correction.
+/// Walks $2v + 1$ over $[1/2]B$, then subtracts $[1/2]B$ and adds `correction`.
+/// The fixed top $+1$ contributes $[8^W/2]B$ to the final correction.
 #[expect(clippy::expect_used, reason = "two is invertible in Fq")]
-pub(crate) fn amount_table(base: Ep, correction: Ep) -> Table<17> {
+pub(crate) fn amount_table<const W: usize>(base: Ep, correction: Ep) -> Table<W> {
+    const {
+        assert!(W > 1 && W <= 84, "corrected walks cover W=2..84");
+    }
     let half = base * Fq::from(2).invert().expect("two is invertible");
-    let offset = half * (Fq::from(8).pow_u64(17) - Fq::ONE);
+    let mut power = Fq::ONE;
+    for _ in 0..W {
+        power *= Fq::from(8);
+    }
+    let offset = half * (power - Fq::ONE);
     table(half, Some(offset + correction))
 }
 
@@ -96,7 +104,7 @@ struct Finite<'dr, D: Driver<'dr>> {
     y: Element<'dr, D>,
 }
 
-/// Two gates share m*n between both coordinates and apply the sign to y.
+/// Two gates share $mn$ between both coordinates and apply the sign to $y$.
 fn select<'dr, D: Driver<'dr, F = Fp>>(
     dr: &mut D,
     row: &[(Fp, Fp); 4],
@@ -222,7 +230,7 @@ pub(crate) fn walk<'dr, D: Driver<'dr, F = Fp>, const W: usize, const N: usize>(
     Ok(CompletePoint { x, y, infinity })
 }
 
-/// Recodes unsigned windows t as signed windows summing to 2t - (8^W - 1).
+/// Recodes unsigned windows $t$ as signed windows summing to $2t - (8^W - 1)$.
 fn recode<const N: usize>(offset: [bool; N]) -> [bool; N] {
     const {
         assert!(N.is_multiple_of(3), "signed windows have three bits");
@@ -244,9 +252,10 @@ fn recode<const N: usize>(offset: [bool; N]) -> [bool; N] {
     windows
 }
 
-/// Encodes the odd representative K in {r, r-q} via t = (K + 2^255 - 1)/2.
-/// Odd r gives floor(r/2) + 2^254; even r gives (r-1)/2 + 2^254 mod q,
-/// whose canonical reduction is the required t below q.
+/// Encodes the odd representative $K \in \{r, r-q\}$ via
+/// $t = (K + 2^{255} - 1)/2$. Odd $r$ gives $\lfloor r/2 \rfloor + 2^{254}$;
+/// even $r$ gives $(r-1)/2 + 2^{254} \bmod q$, whose canonical reduction is
+/// the required $t$ below $q$.
 #[expect(
     clippy::expect_used,
     clippy::indexing_slicing,
@@ -277,24 +286,44 @@ pub(crate) fn free_bits<'dr, D: Driver<'dr, F = Fp>>(
     })
 }
 
-/// Pins 2v + 1 = 8^17 + Σ d_i 8^i using 17 signed windows.
-/// The pinned top +1 bounds the sum to [1, 2^52), so recomposition pins v
-/// to [0, 2^51) in Fp. Its windows recode v's own unsigned bits.
-#[expect(clippy::indexing_slicing, reason = "51 bits form exactly 17 windows")]
-pub(crate) fn amount_digits<'dr, D: Driver<'dr, F = Fp>>(
+/// Allocates $W$ signed windows by recoding $v$'s unsigned bits and pins
+/// $2v + 1 = 8^W + \sum_{i<W} d_i 8^i$ through [`enforce_amount_digits`].
+#[expect(
+    clippy::indexing_slicing,
+    reason = "enforce_amount_digits bounds N below the field width"
+)]
+pub(crate) fn amount_digits<'dr, D: Driver<'dr, F = Fp>, const W: usize, const N: usize>(
     dr: &mut D,
     value: &Element<'dr, D>,
-) -> Result<FixedVec<Boolean<'dr, D>, ConstLen<51>>> {
+) -> Result<FixedVec<Boolean<'dr, D>, ConstLen<N>>> {
     let windows = value.value().map(|candidate| {
         let bits = candidate.to_le_bits();
-        recode::<51>(array::from_fn(|index| bits.as_ref()[index]))
+        recode::<N>(array::from_fn(|index| bits.as_ref()[index]))
     });
-    let bits = FixedVec::<_, ConstLen<51>>::try_from_fn(|index| {
+    let bits = FixedVec::<_, ConstLen<N>>::try_from_fn(|index| {
         Boolean::alloc(dr, &mut (), windows.as_ref().map(|all| all[index]))
     })?;
-    let mut sum = Element::constant(dr, Fp::from(8).pow_u64(17));
+    enforce_amount_digits::<D, W, N>(dr, value, &bits)?;
+    Ok(bits)
+}
+
+/// Pins $2v + 1 = 8^W + \sum_{i<W} d_i 8^i$. The pinned top $+1$ bounds
+/// the right side to odd integers in $[1, 2^{N+1})$, below $p$ for
+/// $N=3W\le252$. Since $2$ is invertible, recomposition pins $v \in [0, 2^N)$
+/// in $\mathbb{F}_p$.
+#[expect(clippy::indexing_slicing, reason = "const assertions fix N = 3 * W")]
+fn enforce_amount_digits<'dr, D: Driver<'dr, F = Fp>, const W: usize, const N: usize>(
+    dr: &mut D,
+    value: &Element<'dr, D>,
+    bits: &FixedVec<Boolean<'dr, D>, ConstLen<N>>,
+) -> Result<()> {
+    const {
+        assert!(W > 0 && W <= 84, "amount recomposition covers W=1..84");
+        assert!(N == 3 * W, "the bit width must match the signed windows");
+    }
+    let mut sum = Element::zero(dr);
     let mut power = Fp::ONE;
-    for window in 0..17 {
+    for window in 0..W {
         let low = bits[3 * window + 1]
             .element()
             .scale(dr, Coeff::Arbitrary(Fp::from(2)));
@@ -308,29 +337,31 @@ pub(crate) fn amount_digits<'dr, D: Driver<'dr, F = Fp>>(
         sum = sum.add(dr, &term);
         power *= Fp::from(8);
     }
+    let top = Element::constant(dr, power);
+    sum = sum.add(dr, &top);
     let odd = value.double(dr).add(dr, &Element::one());
-    sum.enforce_equal(dr, &odd)?;
-    Ok(bits)
+    sum.enforce_equal(dr, &odd)
 }
 
-/// Pins value and its 51-bit slack below the caller's public maximum < 2^51.
-pub(crate) fn bounded_amount<'dr, D: Driver<'dr, F = Fp>>(
+/// Pins $v$ and its $N$-bit slack below the caller's public
+/// $\mathit{maximum}<2^N$.
+pub(crate) fn bounded_amount<'dr, D: Driver<'dr, F = Fp>, const W: usize, const N: usize>(
     dr: &mut D,
     value: &Element<'dr, D>,
     maximum: u64,
-) -> Result<FixedVec<Boolean<'dr, D>, ConstLen<51>>> {
-    let digits = amount_digits(dr, value)?;
+) -> Result<FixedVec<Boolean<'dr, D>, ConstLen<N>>> {
+    let digits = amount_digits::<D, W, N>(dr, value)?;
     let maximum_element = Element::constant(dr, Fp::from(maximum));
     let slack = maximum_element.sub(dr, value);
-    arithmetic::bits::<D, 51>(dr, &slack)?;
+    arithmetic::bits::<D, N>(dr, &slack)?;
     Ok(digits)
 }
 
-pub(crate) fn commitment<'dr, D: Driver<'dr, F = Fp>>(
+pub(crate) fn commitment<'dr, D: Driver<'dr, F = Fp>, const W: usize, const N: usize>(
     dr: &mut D,
-    value_table: &Table<17>,
+    value_table: &Table<W>,
     blind_table: &Table<85>,
-    amount: &FixedVec<Boolean<'dr, D>, ConstLen<51>>,
+    amount: &FixedVec<Boolean<'dr, D>, ConstLen<N>>,
     blind: &FixedVec<Boolean<'dr, D>, ConstLen<255>>,
 ) -> Result<Point<'dr, D, EpAffine>> {
     let product = walk(dr, value_table, amount)?;

@@ -182,7 +182,7 @@ impl Step<Pasta> for SpendBind {
             ragu_core::Error::InvalidWitness("SpendBind: secret does not match note".into())
         })?;
         let value = right_encoded.as_gadget().value.clone();
-        let value_digits = curve::fixed_base::bounded_amount(dr, &value, MAX_MONEY)?;
+        let value_digits = curve::fixed_base::bounded_amount::<D, 17, 51>(dr, &value, MAX_MONEY)?;
         let epoch = left_encoded.as_gadget().epoch_current.clone();
         let one = Element::constant(dr, Fp::ONE);
         let next = epoch.add(dr, &one);

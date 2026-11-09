@@ -77,7 +77,7 @@ fn walk_counts() {
         walk(dr, &R_TABLE, &digest)?;
         check_counts(before, dr, (430, 860));
         before = (dr.num_gates(), dr.num_constraints());
-        let digits = amount_digits(dr, &value)?;
+        let digits = amount_digits::<_, 17, 51>(dr, &value)?;
         check_counts(before, dr, (68, 137));
         before = (dr.num_gates(), dr.num_constraints());
         walk(dr, &V_TABLE, &digits)?;
@@ -123,13 +123,16 @@ fn encoder_decoder_and_free_walk_match_native() {
 }
 
 #[test]
+#[expect(
+    clippy::missing_asserts_for_indexing,
+    reason = "allocated selector bits have ConstLen<3>"
+)]
 fn selector_matches_shared_digit_definition() {
     for (index, digit) in DIGITS.into_iter().enumerate() {
         let magnitude = *value::VALUE_COMMIT_R * Fq::from(u64::from(digit.unsigned_abs()));
         let expected = if digit > 0 { magnitude } else { -magnitude };
         Simulator::<Fp>::simulate((), |dr, _| {
             let bits = alloc_bits::<3>(dr, array::from_fn(|bit| index & (1 << bit) != 0))?;
-            assert_eq!(bits.len(), 3);
             let selected = select(dr, &R_TABLE.rows[0], [&bits[0], &bits[1], &bits[2]])?;
             assert_eq!(
                 (*selected.x.value().take(), *selected.y.value().take()),
@@ -212,11 +215,11 @@ fn digest_walk_matches_native_signed_reading() {
 #[test]
 fn amount_walks_match_native() {
     let base = *value::VALUE_COMMIT_V;
-    let fee = amount_table(base, -base * Fq::from(MAX_MONEY));
+    let fee = amount_table::<17>(base, -base * Fq::from(MAX_MONEY));
     for amount in [0u64, 1, 2, 3, 6, 7, 1 << 50, MAX_MONEY - 1, MAX_MONEY] {
         Simulator::<Fp>::simulate(amount, |dr, witness| {
             let element = Element::alloc(dr, &mut (), witness.map(Fp::from))?;
-            let digits = bounded_amount(dr, &element, MAX_MONEY)?;
+            let digits = bounded_amount::<_, 17, 51>(dr, &element, MAX_MONEY)?;
             let scalar = Fq::from(amount);
             for (table, expected) in [
                 (&*V_TABLE, base * scalar),
@@ -234,7 +237,7 @@ fn amount_walks_match_native() {
     let amount = (1u64 << 51) - 1;
     Simulator::<Fp>::simulate((), |dr, _| {
         let element = Element::constant(dr, Fp::from(amount));
-        let digits = amount_digits(dr, &element)?;
+        let digits = amount_digits::<_, 17, 51>(dr, &element)?;
         assert_eq!(
             native(&walk(dr, &V_TABLE, &digits)?),
             base * Fq::from(amount)
@@ -253,16 +256,44 @@ fn amount_digits_reject_out_of_range() {
     ] {
         let digits = Simulator::<Fp>::simulate(amount, |dr, witness| {
             let element = Element::alloc(dr, &mut (), witness)?;
-            amount_digits(dr, &element)?;
+            amount_digits::<_, 17, 51>(dr, &element)?;
             Ok(())
         });
         assert_eq!(digits.is_ok(), digits_exist);
         let bounded = Simulator::<Fp>::simulate(amount, |dr, witness| {
             let element = Element::alloc(dr, &mut (), witness)?;
-            bounded_amount(dr, &element, MAX_MONEY)?;
+            bounded_amount::<_, 17, 51>(dr, &element, MAX_MONEY)?;
             Ok(())
         });
         assert!(bounded.is_err());
+    }
+}
+
+#[test]
+fn raw_amount_digits_pin_the_upper_boundary() {
+    // Every hand-built window is +7; no native recoding supplies this witness.
+    for amount in [(1u64 << 51) - 1, 1u64 << 51] {
+        let result = Simulator::<Fp>::simulate((), |dr, _| {
+            let element = Element::constant(dr, Fp::from(amount));
+            let digits = alloc_bits(dr, [true; 51])?;
+            enforce_amount_digits::<_, 17, 51>(dr, &element, &digits)
+        });
+        assert_eq!(result.is_ok(), amount < 1u64 << 51);
+    }
+}
+
+#[test]
+fn amount_width_is_selected_by_the_caller() {
+    let base = *value::VALUE_COMMIT_V;
+    let short = amount_table::<2>(base, Ep::identity());
+    for amount in 0u64..=64 {
+        let result = Simulator::<Fp>::simulate((), |dr, _| {
+            let element = Element::constant(dr, Fp::from(amount));
+            let digits = bounded_amount::<_, 2, 6>(dr, &element, 63)?;
+            assert_eq!(native(&walk(dr, &short, &digits)?), base * Fq::from(amount));
+            Ok(())
+        });
+        assert_eq!(result.is_ok(), amount < 64);
     }
 }
 
@@ -280,7 +311,7 @@ fn commitment_matches_native_and_rejects_identity() {
         Simulator::<Fp>::simulate((amount, blind), |dr, witness| {
             let element =
                 Element::alloc(dr, &mut (), witness.as_ref().map(|pair| Fp::from(pair.0)))?;
-            let digits = bounded_amount(dr, &element, MAX_MONEY)?;
+            let digits = bounded_amount::<_, 17, 51>(dr, &element, MAX_MONEY)?;
             let bits = free_bits(dr, &witness.as_ref().map(|pair| pair.1))?;
             let point = commitment(dr, &NEG_V_TABLE, &R_TABLE, &digits, &bits)?;
             assert_eq!(point.value().take().to_projective(), expected);
@@ -290,7 +321,7 @@ fn commitment_matches_native_and_rejects_identity() {
     }
     let identity = Simulator::<Fp>::simulate(Fq::ZERO, |dr, witness| {
         let zero = Element::zero(dr);
-        let digits = bounded_amount(dr, &zero, MAX_MONEY)?;
+        let digits = bounded_amount::<_, 17, 51>(dr, &zero, MAX_MONEY)?;
         let bits = free_bits(dr, &witness)?;
         commitment(dr, &NEG_V_TABLE, &R_TABLE, &digits, &bits)?;
         Ok(())
