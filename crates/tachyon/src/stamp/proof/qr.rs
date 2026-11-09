@@ -204,12 +204,12 @@ impl Header<Fp> for QrIntakeSides {
                 Element::alloc(
                     dr,
                     allocator,
-                    witness.as_ref().map(|fields| fields.5.as_ref()[0]),
+                    witness.as_ref().map(|fields| fields.5.coordinates().0),
                 )?,
                 Element::alloc(
                     dr,
                     allocator,
-                    witness.as_ref().map(|fields| fields.5.as_ref()[1]),
+                    witness.as_ref().map(|fields| fields.5.coordinates().1),
                 )?,
             ],
         })
@@ -712,7 +712,7 @@ impl Step<Pasta> for QrIntakeSplit {
                     anchor_end,
                     discriminant,
                     profile,
-                    [*first.take(), *second.take()].into(),
+                    TachygramSetBridge::from_xy(*first.take(), *second.take())?,
                 ),
                 (),
             ))
@@ -1101,12 +1101,12 @@ impl Header<Fp> for QrBucket {
                 Element::alloc(
                     dr,
                     allocator,
-                    witness.as_ref().map(|fields| fields.5.as_ref()[0]),
+                    witness.as_ref().map(|fields| fields.5.coordinates().0),
                 )?,
                 Element::alloc(
                     dr,
                     allocator,
-                    witness.as_ref().map(|fields| fields.5.as_ref()[1]),
+                    witness.as_ref().map(|fields| fields.5.coordinates().1),
                 )?,
             ],
         })
@@ -1207,6 +1207,10 @@ impl Step<Pasta> for QrBucketSeal {
         let crossing = poseidon::with_driver::anchor_next_epoch(dr, &end, &next)?;
         let output = D::try_just(|| {
             let (epoch, anchor_prev, _, discriminant, profile) = left.take();
+            let [hash_x, hash_y] = oracles
+                .bridge_hash()
+                .clone()
+                .map(|value| *value.value().take());
 
             Ok((
                 (
@@ -1215,11 +1219,7 @@ impl Step<Pasta> for QrBucketSeal {
                     Anchor::from(*crossing.value().take()),
                     discriminant,
                     profile,
-                    oracles
-                        .bridge_hash()
-                        .clone()
-                        .map(|value| *value.value().take())
-                        .into(),
+                    TachygramSetBridge::from_xy(hash_x, hash_y)?,
                 ),
                 (),
             ))
