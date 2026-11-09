@@ -1,9 +1,16 @@
-use core::array;
+use core::{array, iter};
 
 use ragu_primitives::Simulator;
 
-use super::{super::super::arithmetic, *};
-use crate::constants::MAX_MONEY;
+use super::*;
+use crate::{constants::MAX_MONEY, keys::public::ACTION_AUTH_GENERATOR, radix8, value};
+
+lazy_static::lazy_static! {
+    static ref R_TABLE: Table<85> = table(*value::VALUE_COMMIT_R, None);
+    static ref G_TABLE: Table<85> = table(ACTION_AUTH_GENERATOR.to_projective(), None);
+    static ref V_TABLE: Table<17> = amount_table(*value::VALUE_COMMIT_V, Ep::identity());
+    static ref NEG_V_TABLE: Table<17> = amount_table(-*value::VALUE_COMMIT_V, Ep::identity());
+}
 
 fn check_counts(before: (usize, usize), dr: &Simulator<Fp>, expected: (usize, usize)) {
     assert_eq!(
@@ -12,210 +19,122 @@ fn check_counts(before: (usize, usize), dr: &Simulator<Fp>, expected: (usize, us
     );
 }
 
+fn native(output: &CompletePoint<'_, Simulator<Fp>>) -> Ep {
+    if output.infinity.value().take() {
+        Ep::identity()
+    } else {
+        EpAffine::from_xy(*output.x.value().take(), *output.y.value().take())
+            .unwrap()
+            .to_projective()
+    }
+}
+
+fn alloc_bits<'dr, const N: usize>(
+    dr: &mut Simulator<Fp>,
+    bits: [bool; N],
+) -> Result<FixedVec<Boolean<'dr, Simulator<Fp>>, ConstLen<N>>> {
+    FixedVec::try_from_fn(|index| {
+        Boolean::alloc(dr, &mut (), Simulator::<Fp>::just(|| bits[index]))
+    })
+}
+
+fn decode(bits: &[bool]) -> Fq {
+    bits.as_chunks::<3>()
+        .0
+        .iter()
+        .rev()
+        .fold(Fq::ZERO, |acc, &[sign, low, high]| {
+            let magnitude = Fq::from(1 + 2 * u64::from(low) + 4 * u64::from(high));
+            acc * Fq::from(8) + if sign { magnitude } else { -magnitude }
+        })
+}
+
+/// Deterministic scalars from xorshift-filled wide bytes.
+fn scalars(count: usize) -> Vec<Fq> {
+    let mut state = 0x0008_5260u64;
+    iter::repeat_with(|| {
+        let mut wide = [0u8; 64];
+        for chunk in wide.chunks_mut(8) {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            chunk.copy_from_slice(&state.to_le_bytes());
+        }
+        Fq::from_uniform_bytes(&wide)
+    })
+    .take(count)
+    .collect()
+}
+
 #[test]
 fn walk_counts() {
     Simulator::<Fp>::simulate((), |dr, _| {
         let value = Element::constant(dr, Fp::from(17));
-        let bits = arithmetic::bits::<_, 255>(dr, &value)?;
         let mut before = (dr.num_gates(), dr.num_constraints());
-        walk(dr, &R_TABLE, &bits)?;
-        check_counts(before, dr, (516, 1032));
-        let amount = arithmetic::bounded::<_, 51>(dr, &value, MAX_MONEY)?;
+        let digest = arithmetic::bits::<_, 255>(dr, &value)?;
+        check_counts(before, dr, (325, 676));
         before = (dr.num_gates(), dr.num_constraints());
-        walk(dr, &V_TABLE, &amount)?;
-        check_counts(before, dr, (108, 216));
-
-        // W=1 has one low selector, one top selector and the finite adder.
-        // W=2 adds exactly one low selector and one incomplete interior add.
-        let short = table::<1>(*value::VALUE_COMMIT_R, Ep::identity());
-        let zero = Element::zero(dr);
-        let short_bits = arithmetic::bits::<_, 5>(dr, &zero)?;
+        walk(dr, &R_TABLE, &digest)?;
+        check_counts(before, dr, (430, 860));
         before = (dr.num_gates(), dr.num_constraints());
-        walk(dr, &short, &short_bits)?;
-        check_counts(before, dr, (16, 32));
-        let longer = table::<2>(*value::VALUE_COMMIT_R, Ep::identity());
-        let longer_bits = arithmetic::bits::<_, 7>(dr, &zero)?;
+        let digits = amount_digits(dr, &value)?;
+        check_counts(before, dr, (68, 137));
         before = (dr.num_gates(), dr.num_constraints());
-        walk(dr, &longer, &longer_bits)?;
-        check_counts(before, dr, (20, 40));
+        walk(dr, &V_TABLE, &digits)?;
+        check_counts(before, dr, (93, 186));
         Ok(())
     })
     .unwrap();
 }
 
-fn raw_bits(value: Fq) -> [bool; 255] {
-    array::from_fn(|index| value.to_le_bits().as_ref()[index])
-}
-
-fn check_walk<const W: usize, const N: usize>(
-    table: &Table<W>,
-    base: Ep,
-    correction: Ep,
-    bits: [bool; N],
-) {
-    let scalar = bits.iter().rev().fold(Fq::ZERO, |acc, bit| {
-        acc.double() + Fq::from(u64::from(*bit))
-    });
-    let expected = base * scalar + correction;
-    Simulator::<Fp>::simulate(bits, |dr, witness| {
-        let allocated = FixedVec::<_, ConstLen<N>>::try_from_fn(|index| {
-            Boolean::alloc(
-                dr,
-                &mut (),
-                witness.as_ref().map(|assignment| assignment[index]),
-            )
-        })?;
-        let output = walk(dr, table, &allocated)?;
-        let actual = if output.infinity.value().take() {
-            Ep::identity()
-        } else {
-            EpAffine::from_xy(*output.x.value().take(), *output.y.value().take())
-                .unwrap()
-                .to_projective()
-        };
-        assert_eq!(actual, expected);
-        Ok(())
-    })
-    .unwrap();
-}
-
-#[expect(
-    clippy::missing_asserts_for_indexing,
-    reason = "the low selector input has ConstLen<2>"
-)]
-fn check_table<const W: usize>(table: &Table<W>, base: Ep, correction: Ep) {
-    let mut power = Fq::ONE;
-    let mut offset = Fq::ZERO;
-    for row in &table.low {
-        for (digit, coordinates) in [2u64, 3, 4, 5].into_iter().zip(row) {
-            let point = base * (Fq::from(digit) * power);
-            assert_eq!(*coordinates, point.to_affine().coordinates().unwrap());
-            Simulator::<Fp>::simulate((), |dr, _| {
-                let bits = FixedVec::<_, ConstLen<2>>::try_from_fn(|index| {
-                    Boolean::alloc(
-                        dr,
-                        &mut (),
-                        Simulator::<Fp>::just(|| (digit - 2) & (1 << index) != 0),
-                    )
-                })?;
-                let before = (dr.num_gates(), dr.num_constraints());
-                let selected = select_low(dr, row, [&bits[0], &bits[1]])?;
-                check_counts(before, dr, (1, 2));
-                assert_eq!(
-                    (*selected.x.value().take(), *selected.y.value().take()),
-                    *coordinates
-                );
+#[test]
+fn encoder_decoder_and_free_walk_match_native() {
+    let half = Fq::from(2).invert().unwrap();
+    let mut cases = Vec::from([
+        Fq::ZERO,
+        Fq::ONE,
+        Fq::from(2),
+        Fq::from(3),
+        -Fq::ONE,
+        -Fq::from(2),
+        Fq::from_bytes((-Fp::ONE).to_bytes()).unwrap(),
+        Fq::from(2).pow_u64(254),
+        Fq::from(2).pow_u64(254) + Fq::ONE,
+        -half,
+        half,
+    ]);
+    cases.extend(scalars(32));
+    for scalar in cases {
+        assert_eq!(decode(&encode(scalar)), scalar);
+        for (table, base) in [
+            (&*R_TABLE, *value::VALUE_COMMIT_R),
+            (&*G_TABLE, ACTION_AUTH_GENERATOR.to_projective()),
+        ] {
+            Simulator::<Fp>::simulate(scalar, |dr, witness| {
+                let bits = free_bits(dr, &witness)?;
+                let output = walk(dr, table, &bits)?;
+                assert_eq!(output.infinity.value().take(), scalar == Fq::ZERO);
+                assert_eq!(native(&output), base * scalar);
                 Ok(())
             })
             .unwrap();
         }
-        offset += Fq::from(2) * power;
-        power *= Fq::from(4);
-    }
-    // Exercise each real top entry through the complete top boundary of a
-    // one-window walk, with its low digit fixed to the first finite entry.
-    let first = *table.low.first().unwrap();
-    let prefix = EpAffine::from_xy(first[0].0, first[0].1)
-        .unwrap()
-        .to_projective();
-    let boundary = Table::<1> {
-        low: alloc::vec![first],
-        top: table.top,
-    };
-    for (digit, coordinates) in (0u64..8).zip(table.top) {
-        let point = base * (Fq::from(digit) * power - offset) + correction;
-        assert_eq!(coordinates, point.to_affine().coordinates().unwrap());
-        let bits = [false, false, digit & 1 != 0, digit & 2 != 0, digit & 4 != 0];
-        // The test boundary's top is copied from the full table, so its
-        // expected correction is the difference from a normal W=1 walk.
-        let expected_correction = prefix + point - base * Fq::from(4 * digit);
-        check_walk(&boundary, base, expected_correction, bits);
     }
 }
 
 #[test]
-fn tables_and_walks() {
-    let power = Fq::from(4).pow_u64(126);
-    let third = Fq::from(3).invert().unwrap();
-    let deep_dive = -Fq::from(2) * (Fq::from(4).pow_u64(127) - Fq::ONE) * third;
-    let doubles = (Fq::from(2) * power + Fq::from(4)) * third + Fq::from(2) * power;
-    let mut modulus = raw_bits(-Fq::ONE);
-    for bit in &mut modulus {
-        *bit = !*bit;
-        if *bit {
-            break;
-        }
-    }
-    let low = raw_bits(Fq::from(12) * power - Fq::from(4) * (power - Fq::ONE) * third);
-    let mut carry = false;
-    let noncanonical = array::from_fn(|index| {
-        let sum = u8::from(low[index]) + u8::from(modulus[index]) + u8::from(carry);
-        carry = sum >= 2;
-        sum & 1 == 1
-    });
-    assert!(!carry);
-    let p_minus_one = Fq::from_bytes((-Fp::ONE).to_bytes()).unwrap();
-    let mut cases = Vec::from([
-        raw_bits(Fq::ZERO),
-        raw_bits(Fq::ONE),
-        raw_bits(p_minus_one),
-        raw_bits(-Fq::ONE),
-        raw_bits(Fq::from(2).pow_u64(254)),
-        raw_bits(deep_dive),
-        raw_bits(doubles),
-        [true; 255],
-        modulus,
-        noncanonical,
-    ]);
-    for bit in 0..255 {
-        let mut bits = [false; 255];
-        bits[bit] = true;
-        cases.push(bits);
-    }
-    for (table, base) in [
-        (&*R_TABLE, *value::VALUE_COMMIT_R),
-        (&*G_TABLE, ACTION_AUTH_GENERATOR.to_projective()),
-    ] {
-        check_table(table, base, Ep::identity());
-        for bits in &cases {
-            check_walk(table, base, Ep::identity(), *bits);
-        }
-    }
-    let fee_correction = -*value::VALUE_COMMIT_V * Fq::from(MAX_MONEY);
-    let corrected = table::<24>(*value::VALUE_COMMIT_V, fee_correction);
-    for (table, base, correction) in [
-        (&*V_TABLE, *value::VALUE_COMMIT_V, Ep::identity()),
-        (&*NEG_V_TABLE, -*value::VALUE_COMMIT_V, Ep::identity()),
-        (&corrected, *value::VALUE_COMMIT_V, fee_correction),
-    ] {
-        check_table(table, base, correction);
-        for amount in [0u64, 1, MAX_MONEY, (1 << 51) - 1] {
-            let bits: [bool; 51] = array::from_fn(|index| amount & (1 << index) != 0);
-            check_walk(table, base, correction, bits);
-        }
-    }
-}
-
-#[test]
-fn finite_addition_exceptions_at_top_boundary() {
-    let base = EpAffine::generator().to_projective();
-    // With all digits zero, the prefix is [2]B and the top is [-2]B + C.
-    // C=0 makes inverses, C=[4]B makes equal points, C=[5]B is generic.
-    for coefficient in [0u64, 4, 5] {
-        let correction = base * Fq::from(coefficient);
-        let boundary = table::<1>(base, correction);
+fn selector_matches_shared_digit_definition() {
+    for (index, digit) in DIGITS.into_iter().enumerate() {
+        let magnitude = *value::VALUE_COMMIT_R * Fq::from(u64::from(digit.unsigned_abs()));
+        let expected = if digit > 0 { magnitude } else { -magnitude };
         Simulator::<Fp>::simulate((), |dr, _| {
-            let zero = Element::zero(dr);
-            let bits = arithmetic::bits::<_, 5>(dr, &zero)?;
-            let before = (dr.num_gates(), dr.num_constraints());
-            let output = walk(dr, &boundary, &bits)?;
-            check_counts(before, dr, (16, 32));
-            assert_eq!(output.infinity.value().take(), coefficient == 0);
-            let point = Point::constant(dr, base.to_affine())?;
-            let third = super::super::from_point(dr, &point)?;
-            let sum = super::super::add_complete(dr, &output, &third)?;
-            let result = super::super::finish(dr, &sum)?;
-            assert_eq!(result.value().take().to_projective(), correction + base);
+            let bits = alloc_bits::<3>(dr, array::from_fn(|bit| index & (1 << bit) != 0))?;
+            assert_eq!(bits.len(), 3);
+            let selected = select(dr, &R_TABLE.rows[0], [&bits[0], &bits[1], &bits[2]])?;
+            assert_eq!(
+                (*selected.x.value().take(), *selected.y.value().take()),
+                expected.to_affine().coordinates().unwrap()
+            );
             Ok(())
         })
         .unwrap();
@@ -223,13 +142,158 @@ fn finite_addition_exceptions_at_top_boundary() {
 }
 
 #[test]
-fn zero_value_and_blind_reject_at_finite_export() {
-    let result = Simulator::<Fp>::simulate(Fq::ZERO, |dr, witness| {
+fn top_window_inverse_and_doubling() {
+    let zero = encode(Fq::ZERO);
+    let mut doubling = zero;
+    doubling[252] = !doubling[252];
+    let power = Fq::from(8).pow_u64(84);
+    for (bits, inverse) in [(zero, true), (doubling, false)] {
+        let prefix = decode(&bits[..252]);
+        let top = decode(&bits[252..]) * power;
+        assert_eq!(prefix, if inverse { -top } else { top });
+        let expected = *value::VALUE_COMMIT_R * decode(&bits);
+        Simulator::<Fp>::simulate((), |dr, _| {
+            let allocated = alloc_bits(dr, bits)?;
+            let output = walk(dr, &R_TABLE, &allocated)?;
+            assert_eq!(output.infinity.value().take(), inverse);
+            assert_eq!(native(&output), expected);
+            Ok(())
+        })
+        .unwrap();
+    }
+}
+
+fn add_bits<const N: usize>(left: [bool; N], right: [bool; N]) -> Option<[bool; N]> {
+    let mut carry = false;
+    let sum = array::from_fn(|index| {
+        let total = u8::from(left[index]) + u8::from(right[index]) + u8::from(carry);
+        carry = total >= 2;
+        total & 1 == 1
+    });
+    (!carry).then_some(sum)
+}
+
+#[test]
+fn digest_walk_matches_native_signed_reading() {
+    let mut digests = Vec::from([
+        Fp::ZERO,
+        Fp::ONE,
+        Fp::from(2),
+        -Fp::ONE,
+        Fp::from(2).pow_u64(254),
+    ]);
+    digests.extend(scalars(16).into_iter().map(|scalar| {
+        let mut bytes = scalar.to_bytes();
+        bytes[31] &= 0x3f;
+        Fp::from_bytes(bytes).unwrap()
+    }));
+    let canonical = |digest: Fp| -> [bool; 255] {
+        let bits = digest.to_le_bits();
+        array::from_fn(|index| bits.as_ref()[index])
+    };
+    let modulus = add_bits(canonical(-Fp::ONE), array::from_fn(|index| index == 0)).unwrap();
+    let base = ACTION_AUTH_GENERATOR.to_projective();
+    for digest in digests {
+        let expected = base * radix8::read(digest);
+        Simulator::<Fp>::simulate(digest, |dr, witness| {
+            let element = Element::alloc(dr, &mut (), witness)?;
+            let bits = arithmetic::bits::<_, 255>(dr, &element)?;
+            assert_eq!(native(&walk(dr, &G_TABLE, &bits)?), expected);
+            Ok(())
+        })
+        .unwrap();
+        // h + p recomposes to h but denotes a different scalar: keep the comparator.
+        if let Some(wide) = add_bits(canonical(digest), modulus) {
+            assert_ne!(decode(&wide), radix8::read(digest));
+        }
+    }
+}
+
+#[test]
+fn amount_walks_match_native() {
+    let base = *value::VALUE_COMMIT_V;
+    let fee = amount_table(base, -base * Fq::from(MAX_MONEY));
+    for amount in [0u64, 1, 2, 3, 6, 7, 1 << 50, MAX_MONEY - 1, MAX_MONEY] {
+        Simulator::<Fp>::simulate(amount, |dr, witness| {
+            let element = Element::alloc(dr, &mut (), witness.map(Fp::from))?;
+            let digits = bounded_amount(dr, &element, MAX_MONEY)?;
+            let scalar = Fq::from(amount);
+            for (table, expected) in [
+                (&*V_TABLE, base * scalar),
+                (&*NEG_V_TABLE, -base * scalar),
+                (&fee, base * (scalar - Fq::from(MAX_MONEY))),
+            ] {
+                let output = walk(dr, table, &digits)?;
+                assert_eq!(output.infinity.value().take(), expected.is_identity());
+                assert_eq!(native(&output), expected);
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+    let amount = (1u64 << 51) - 1;
+    Simulator::<Fp>::simulate((), |dr, _| {
+        let element = Element::constant(dr, Fp::from(amount));
+        let digits = amount_digits(dr, &element)?;
+        assert_eq!(
+            native(&walk(dr, &V_TABLE, &digits)?),
+            base * Fq::from(amount)
+        );
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn amount_digits_reject_out_of_range() {
+    for (amount, digits_exist) in [
+        (Fp::from((1 << 51) - 1), true),
+        (Fp::from(1 << 51), false),
+        (-Fp::ONE, false),
+    ] {
+        let digits = Simulator::<Fp>::simulate(amount, |dr, witness| {
+            let element = Element::alloc(dr, &mut (), witness)?;
+            amount_digits(dr, &element)?;
+            Ok(())
+        });
+        assert_eq!(digits.is_ok(), digits_exist);
+        let bounded = Simulator::<Fp>::simulate(amount, |dr, witness| {
+            let element = Element::alloc(dr, &mut (), witness)?;
+            bounded_amount(dr, &element, MAX_MONEY)?;
+            Ok(())
+        });
+        assert!(bounded.is_err());
+    }
+}
+
+#[test]
+fn commitment_matches_native_and_rejects_identity() {
+    let value_base = *value::VALUE_COMMIT_V;
+    let blind_base = *value::VALUE_COMMIT_R;
+    for (amount, blind) in [
+        (0u64, Fq::ONE),
+        (1, Fq::ZERO),
+        (MAX_MONEY, -Fq::ONE),
+        (12_345, scalars(1)[0]),
+    ] {
+        let expected = -value_base * Fq::from(amount) + blind_base * blind;
+        Simulator::<Fp>::simulate((amount, blind), |dr, witness| {
+            let element =
+                Element::alloc(dr, &mut (), witness.as_ref().map(|pair| Fp::from(pair.0)))?;
+            let digits = bounded_amount(dr, &element, MAX_MONEY)?;
+            let bits = free_bits(dr, &witness.as_ref().map(|pair| pair.1))?;
+            let point = commitment(dr, &NEG_V_TABLE, &R_TABLE, &digits, &bits)?;
+            assert_eq!(point.value().take().to_projective(), expected);
+            Ok(())
+        })
+        .unwrap();
+    }
+    let identity = Simulator::<Fp>::simulate(Fq::ZERO, |dr, witness| {
         let zero = Element::zero(dr);
-        let amount = arithmetic::bounded::<_, 51>(dr, &zero, MAX_MONEY)?;
-        let blind = free_bits(dr, &witness)?;
-        commitment(dr, &NEG_V_TABLE, &amount, &blind)?;
+        let digits = bounded_amount(dr, &zero, MAX_MONEY)?;
+        let bits = free_bits(dr, &witness)?;
+        commitment(dr, &NEG_V_TABLE, &R_TABLE, &digits, &bits)?;
         Ok(())
     });
-    assert!(result.is_err());
+    assert!(identity.is_err());
 }

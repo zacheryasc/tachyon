@@ -6,6 +6,9 @@ use udon::field::Field as _;
 
 use crate::pasta::{Fp, Fq};
 
+/// Digits indexed by the little-endian window (sign, low, high).
+pub(crate) const DIGITS: [i8; 8] = [-1, 1, -3, 3, -5, 5, -7, 7];
+
 /// The scalar a digest $h$ denotes, read as a signed odd-digit radix-8 sum:
 ///
 /// $$
@@ -14,6 +17,10 @@ use crate::pasta::{Fp, Fq};
 ///
 /// where $(s_i, m_i, n_i)$ are bits $3i$, $3i + 1$ and $3i + 2$ of the
 /// canonical little-endian encoding of $h$.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "three bits index the eight signed digits"
+)]
 pub(crate) fn read(digest: Fp) -> Fq {
     let bits = digest
         .to_bytes()
@@ -23,8 +30,9 @@ pub(crate) fn read(digest: Fp) -> Fq {
         .iter()
         .rev()
         .fold(Fq::ZERO, |acc, &[sign, low, high]| {
-            let magnitude = Fq::from(u64::from(1 + 2 * low + 4 * high));
-            acc * Fq::from(8u64) + if sign == 1 { magnitude } else { -magnitude }
+            let digit = DIGITS[usize::from(sign + 2 * low + 4 * high)];
+            let magnitude = Fq::from(u64::from(digit.unsigned_abs()));
+            acc * Fq::from(8u64) + if digit > 0 { magnitude } else { -magnitude }
         })
 }
 
