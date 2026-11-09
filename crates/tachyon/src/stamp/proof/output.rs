@@ -21,7 +21,7 @@ use crate::{
     digest::poseidon,
     note::Note,
     pasta::{EpAffine, Fp, Fq},
-    relations::{arithmetic as circuit, curve},
+    relations::curve,
     value,
 };
 
@@ -115,7 +115,7 @@ impl Step<Pasta> for OutputBind {
                 .as_ref()
                 .map(|data| Fp::from(u64::from(data.0.value))),
         )?;
-        let amount_bits = circuit::bounded::<D, 51>(dr, &amount, MAX_MONEY)?;
+        let amount_digits = curve::fixed_base::bounded_amount::<D, 17, 51>(dr, &amount, MAX_MONEY)?;
         let rcm = Element::alloc(
             dr,
             &mut (),
@@ -139,8 +139,9 @@ impl Step<Pasta> for OutputBind {
             curve::fixed_base::free_bits(dr, &witness.as_ref().map(|data| Fq::from(data.1)))?;
         let cv = curve::fixed_base::commitment(
             dr,
-            &curve::fixed_base::NEG_V_TABLE,
-            &amount_bits,
+            &super::NEG_V_TABLE,
+            &super::R_TABLE,
+            &amount_digits,
             &rcv_bits,
         )?;
         let output = D::just(|| {
