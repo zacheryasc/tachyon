@@ -49,7 +49,7 @@ use crate::{
     pasta::Fp,
     primitives::{
         Anchor, EpochIndex, NfSeqPoly, QrClassRoot, QrDiscriminant, QrInterpolantPoly, QrProfile,
-        QrQuotientPoly, Tachygram, TachygramSetPoly,
+        QrQuotientPoly, Tachygram, TachygramSetBridge, TachygramSetPoly,
     },
     relations::{
         arithmetic as circuit,
@@ -154,7 +154,7 @@ impl Header<Fp> for QrIntakeSides {
         Anchor,
         QrDiscriminant,
         QrProfile,
-        [Fp; 2],
+        TachygramSetBridge,
     );
     type Output = Kind![Fp; QrIntakeSidesOutput<'_, _>];
 
@@ -201,8 +201,16 @@ impl Header<Fp> for QrIntakeSides {
                     .map(|fields| Fp::from(u64::from(fields.4.bits))),
             )?,
             non_residue_hash: [
-                Element::alloc(dr, allocator, witness.as_ref().map(|fields| fields.5[0]))?,
-                Element::alloc(dr, allocator, witness.as_ref().map(|fields| fields.5[1]))?,
+                Element::alloc(
+                    dr,
+                    allocator,
+                    witness.as_ref().map(|fields| fields.5.as_ref()[0]),
+                )?,
+                Element::alloc(
+                    dr,
+                    allocator,
+                    witness.as_ref().map(|fields| fields.5.as_ref()[1]),
+                )?,
             ],
         })
     }
@@ -704,7 +712,7 @@ impl Step<Pasta> for QrIntakeSplit {
                     anchor_end,
                     discriminant,
                     profile,
-                    [*first.take(), *second.take()],
+                    [*first.take(), *second.take()].into(),
                 ),
                 (),
             ))
@@ -1043,7 +1051,7 @@ impl Header<Fp> for QrBucket {
         Anchor,
         QrDiscriminant,
         QrProfile,
-        [Fp; 2],
+        TachygramSetBridge,
     );
     type Output = Kind![Fp; QrBucketOutput<'_, _>];
 
@@ -1090,8 +1098,16 @@ impl Header<Fp> for QrBucket {
                     .map(|fields| Fp::from(u64::from(fields.4.bits))),
             )?,
             contents_hash: [
-                Element::alloc(dr, allocator, witness.as_ref().map(|fields| fields.5[0]))?,
-                Element::alloc(dr, allocator, witness.as_ref().map(|fields| fields.5[1]))?,
+                Element::alloc(
+                    dr,
+                    allocator,
+                    witness.as_ref().map(|fields| fields.5.as_ref()[0]),
+                )?,
+                Element::alloc(
+                    dr,
+                    allocator,
+                    witness.as_ref().map(|fields| fields.5.as_ref()[1]),
+                )?,
             ],
         })
     }
@@ -1202,7 +1218,8 @@ impl Step<Pasta> for QrBucketSeal {
                     oracles
                         .bridge_hash()
                         .clone()
-                        .map(|value| *value.value().take()),
+                        .map(|value| *value.value().take())
+                        .into(),
                 ),
                 (),
             ))

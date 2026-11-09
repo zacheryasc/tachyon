@@ -12,15 +12,11 @@ use ragu_core::{
     pasta::Pasta,
 };
 use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
-use udon::{
-    curve::{Affine as _, Projective as _},
-    field::Field as _,
-};
+use udon::{curve::Projective as _, field::Field as _};
 use zcash_tachyon::{
     Anchor, BlockHeight, EpochIndex, NfSeqPoly, QrClassRoot, QrDiscriminant, QrProfile, Tachygram,
-    TachygramSetPoly,
+    TachygramSetCommit, TachygramSetPoly,
     constants::{EPOCH_MAX, EPOCH_SIZE},
-    digest::poseidon,
     nullifier::Nullifier,
     pasta::{Eq, Fp},
     stamp::proof::{
@@ -130,29 +126,27 @@ fn qr_intake_split_partitions_the_contents_by_class() {
         )
         .unwrap();
 
-    let (hash_x, hash_y) = application
-        .bridge_hash(split.commitments()[1])
-        .unwrap()
-        .coordinates()
+    let non_residue_hash = non_residue
+        .iter()
+        .copied()
+        .collect::<TachygramSetPoly>()
+        .commit()
+        .bridge()
         .unwrap();
+    let stamp_commit = members
+        .iter()
+        .copied()
+        .collect::<TachygramSetPoly>()
+        .commit();
     assert_eq!(
         *split.data(),
         (
             epoch,
             start,
-            start
-                .next_stamp(
-                    epoch,
-                    &members
-                        .iter()
-                        .copied()
-                        .collect::<TachygramSetPoly>()
-                        .commit()
-                )
-                .unwrap(),
+            start.next_stamp(epoch, &stamp_commit).unwrap(),
             discriminant,
             QrProfile::ROOT,
-            (hash_x, hash_y).into(),
+            non_residue_hash,
         )
     );
     assert_eq!(
@@ -934,7 +928,9 @@ fn qr_bucket_seal_seals_a_fully_routed_intake() {
             final_anchor.next_epoch(epoch.next().unwrap()).unwrap(),
             discriminant,
             profile,
-            poseidon::bridge_hash(contents).unwrap(),
+            TachygramSetCommit::from(Eq::from(contents))
+                .bridge()
+                .unwrap(),
         )
     );
     assert_eq!(bucket.pcd.commitments()[0], contents);

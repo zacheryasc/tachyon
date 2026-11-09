@@ -176,7 +176,7 @@ pub fn build_output_stamp<RNG: CryptoRng>(
     anchor: Anchor,
     note: Note,
 ) -> (
-    ProofStamp<ragu::Proof<Pasta, ProductionRank>>,
+    ProofStamp<stamp::Uncompressed>,
     action::Plan<effect::Output>,
     fee::Descriptor,
 ) {
@@ -197,7 +197,7 @@ pub fn build_output_stamp_with_fee<RNG: CryptoRng>(
     anchor: Anchor,
     note: Note,
 ) -> (
-    ProofStamp<ragu::Proof<Pasta, ProductionRank>>,
+    ProofStamp<stamp::Uncompressed>,
     action::Plan<effect::Output>,
     Note,
 ) {
@@ -222,7 +222,7 @@ pub fn build_autonome<RNG: CryptoRng>(
     wallet: &WalletSim,
     spend_value: u64,
     output_value: u64,
-) -> Bundle<ProofStamp<ragu::Proof<Pasta, ProductionRank>>> {
+) -> Bundle<ProofStamp<stamp::Uncompressed>> {
     let spend_note = wallet.random_note(spend_value);
     let output_note = wallet.random_note(output_value);
     let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
@@ -244,12 +244,12 @@ pub fn forge_overlapping_merge<RNG: CryptoRng>(
     application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
     rng: &mut RNG,
     (stamp_a, descriptors_a, fee_descriptors_a): (
-        &ProofStamp<ragu::Proof<Pasta, ProductionRank>>,
+        &ProofStamp<stamp::Uncompressed>,
         &Vec<action::Descriptor>,
         &[fee::Descriptor],
     ),
     (stamp_b, descriptors_b, fee_descriptors_b): (
-        &ProofStamp<ragu::Proof<Pasta, ProductionRank>>,
+        &ProofStamp<stamp::Uncompressed>,
         &Vec<action::Descriptor>,
         &[fee::Descriptor],
     ),
@@ -1446,7 +1446,7 @@ impl WalletSim {
             ragu::Pcd<Pasta, ProductionRank, spendable::NoteSpendable>,
         )>,
         output_notes: Vec<Note>,
-    ) -> Bundle<ProofStamp<ragu::Proof<Pasta, ProductionRank>>> {
+    ) -> Bundle<ProofStamp<stamp::Uncompressed>> {
         let (bundle_plan, unproven, spend_pcds) =
             self.signed(application, rng, spends, output_notes, self.random_note(0));
         let stamp_plan = bundle_plan.stamp_plan(anchor, value::Positive::ZERO);

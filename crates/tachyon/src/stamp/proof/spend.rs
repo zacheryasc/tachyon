@@ -182,7 +182,7 @@ impl Step<Pasta> for SpendBind {
             ragu_core::Error::InvalidWitness("SpendBind: secret does not match note".into())
         })?;
         let value = right_encoded.as_gadget().value.clone();
-        circuit::bounded::<D, 51>(dr, &value, MAX_MONEY)?;
+        let value_bits = circuit::bounded::<D, 51>(dr, &value, MAX_MONEY)?;
         let epoch = left_encoded.as_gadget().epoch_current.clone();
         let one = Element::constant(dr, Fp::ONE);
         let next = epoch.add(dr, &one);
@@ -198,9 +198,10 @@ impl Step<Pasta> for SpendBind {
             ragu_core::Error::InvalidWitness("SpendBind: next-epoch nullifier is zero".into())
         })?;
 
-        let value_bits = circuit::bits::<D, 51>(dr, &value)?;
-        let rcv_bits = circuit::scalar_bits(dr, &witness.as_ref().map(|data| Fq::from(data.0)))?;
-        let cv = curve::commitment(dr, &value_bits, &rcv_bits, false)?;
+        let rcv_bits =
+            curve::fixed_base::free_bits(dr, &witness.as_ref().map(|data| Fq::from(data.0)))?;
+        let cv =
+            curve::fixed_base::commitment(dr, &curve::fixed_base::V_TABLE, &value_bits, &rcv_bits)?;
         let output = D::just(|| {
             let (spendable_cm, _, anchor) = left.take();
             let (_, note, _) = right.take();

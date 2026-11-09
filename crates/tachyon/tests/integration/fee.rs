@@ -9,9 +9,11 @@ use ragu_core::pasta::Pasta;
 use rand::{SeedableRng as _, rngs::StdRng};
 use zcash_tachyon::{
     ActionDigest, Anchor, Bundle, Note, Tachygram, TachygramSetPoly, VerificationError,
-    VerifyCoverageError, VerifyTachygramsError, action, bundle, fee,
+    VerifyCoverageError, VerifyTachygramsError, action, bundle,
+    constants::MAX_MONEY,
+    fee,
     stamp::{
-        ProofStamp, StampProof as _,
+        self, Proof as _, ProofStamp,
         proof::{
             HEADER_SIZE, output,
             stamp::{Actions, FeeFuse, FeeSeed, OutputAction, Stamp},
@@ -32,7 +34,7 @@ fn fee_less_output_bundle(
     wallet: &WalletSim,
     anchor: Anchor,
     max_fee_note: Note,
-) -> Bundle<ProofStamp<ragu::Proof<Pasta, ProductionRank>>> {
+) -> Bundle<ProofStamp<stamp::Uncompressed>> {
     let (rcv, theta, output_plan) = build_output_plan(rng, wallet.random_note(500));
     let (bind_pcd, ()) = application
         .seed(
@@ -136,6 +138,62 @@ fn fee_fuse_binds_its_sets() {
                 .err(),
             Some(ragu_core::Error::InvalidWitness(err)) if err.to_string() == expected
         );
+    }
+}
+
+#[test]
+fn fee_fuse_slack_boundaries() {
+    let application = &*application();
+    let rng = &mut StdRng::seed_from_u64(0);
+    let wallet = WalletSim::new(shared_sk());
+    let anchor = Anchor::random(rng);
+    let left = fee_less_output_bundle(application, rng, &wallet, anchor, wallet.random_note(300));
+    let digests = left
+        .descriptors()
+        .map(|descriptor| descriptor.digest().unwrap())
+        .collect();
+    let left_pcd = left.stamp.proof.clone().carry::<Actions>(anchor);
+    for (maximum, fee) in [
+        (0, 0),
+        (1, 0),
+        (1, 1),
+        (1000, 1000),
+        (MAX_MONEY, 0),
+        (MAX_MONEY, MAX_MONEY),
+    ] {
+        let note = wallet.random_note(maximum);
+        let witness = witness::fee_fuse(
+            (anchor, ()),
+            note,
+            value::Positive::try_from(fee).unwrap(),
+            &digests,
+            &left.stamp.tachygrams,
+        );
+        let (pcd, ()) = application
+            .fuse(
+                rng,
+                FeeFuse,
+                witness.clone(),
+                left_pcd.clone(),
+                application.bootstrap_proof().clone().carry::<()>(()),
+            )
+            .unwrap();
+        assert!(application.verify_differential(&pcd, &mut *rng).unwrap());
+        if maximum < MAX_MONEY {
+            let mut corrupt = witness;
+            corrupt.1 = value::Positive::try_from(maximum + 1).unwrap();
+            assert_matches!(
+                application.fuse(
+                    rng,
+                    FeeFuse,
+                    corrupt,
+                    left_pcd.clone(),
+                    application.bootstrap_proof().clone().carry::<()>(()),
+                ).err(),
+                Some(ragu_core::Error::InvalidWitness(err))
+                    if err.to_string() == "FeeFuse: change is out of range"
+            );
+        }
     }
 }
 
@@ -513,7 +571,7 @@ fn zero_action_fee_seed_round_trips_and_verifies() {
         .unwrap();
     let mut bytes = Vec::new();
     bundle.write(&mut bytes).unwrap();
-    let decoded = Bundle::<ProofStamp<ragu::Proof<Pasta, ProductionRank>>>::read(&*bytes).unwrap();
+    let decoded = Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*bytes).unwrap();
     assert_eq!(decoded.auth_digest(), bundle.auth_digest());
     decoded
         .verify(
@@ -643,11 +701,11 @@ fn fee_seed_binds_its_singletons_and_header() {
     let compressed = {
         let compressed = application.compress(&seed_pcd, rng).unwrap();
         let bytes = compressed.proof().to_bytes().unwrap();
-        ragu::CompressedProof::<Pasta>::from_bytes(&bytes).unwrap()
+        stamp::Compressed::from_bytes(&bytes).unwrap()
     };
     let proof = {
         let bytes = seed_pcd.proof().to_bytes().unwrap();
-        ragu::Proof::<Pasta, ProductionRank>::from_bytes(&bytes).unwrap()
+        stamp::Uncompressed::from_bytes(&bytes).unwrap()
     };
     for (header, expected) in [
         ((valid.2.commit(), valid.3.commit(), anchor), true),

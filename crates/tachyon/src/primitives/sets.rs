@@ -2,9 +2,13 @@ use core::iter;
 
 use corez::io::{self, Read, Write};
 use derive_more::{AsRef, Debug, Eq as TotalEq, From, Into, PartialEq};
-use ragu_circuits::polynomials::{ProductionRank, sparse::Polynomial};
+use ragu_circuits::{
+    polynomials::{ProductionRank, sparse::Polynomial},
+    staging::wire_degree,
+};
 use ragu_core::{Cycle as _, FixedGenerators as _, pasta::Pasta};
-use udon::curve::Projective as _;
+use ragu_primitives::{ENDOSCALAR_BITS, ENDOSCALAR_PRODUCTS};
+use udon::curve::{Affine as _, Projective as _};
 
 use super::{ActionDigest, Anchor, Tachygram};
 use crate::{
@@ -18,7 +22,37 @@ use crate::{
 #[derive(AsRef, Clone, Copy, Debug, From, Into, PartialEq, TotalEq)]
 pub struct TachygramSetCommit(Eq);
 
+/// Bridge hash of a tachygram-set commitment.
+#[derive(AsRef, Clone, Copy, Debug, From, Into, PartialEq, TotalEq)]
+pub struct TachygramSetBridge([Fp; 2]);
+
 impl TachygramSetCommit {
+    /// Hashes this commitment with the baked bridge generators.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the commitment or its bridge hash is the identity.
+    pub fn bridge(self) -> ragu_core::Result<TachygramSetBridge> {
+        let (x, y) = self.0.to_affine().coordinates().ok_or_else(|| {
+            ragu_core::Error::InvalidWitness("cannot hash the identity commitment".into())
+        })?;
+        // Two stage wires per gate follow the hoisted endoscalar's bits and products.
+        let first_wire = (ENDOSCALAR_BITS + ENDOSCALAR_PRODUCTS).next_multiple_of(2);
+        let generators = Pasta::nested_generators(pasta::baked()).g();
+        let [left, right] = [first_wire, first_wire + 1].map(|wire| {
+            generators
+                .get(wire_degree::<ProductionRank>(wire))
+                .ok_or_else(|| {
+                    ragu_core::Error::Initialization("bridge generator is missing".into())
+                })
+        });
+        let hash = left?.to_projective() * x + right?.to_projective() * y;
+        let coordinates = hash.to_affine().coordinates().ok_or_else(|| {
+            ragu_core::Error::InvalidWitness("bridge hash is the identity".into())
+        })?;
+        Ok(TachygramSetBridge(coordinates.into()))
+    }
+
     /// Read as an affine point from the consensus wire format.
     ///
     /// # Errors

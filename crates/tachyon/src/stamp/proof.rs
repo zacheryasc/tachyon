@@ -35,10 +35,11 @@ use ragu::{Application, ApplicationBuilder, RegistryTags, step::Step};
 use ragu_circuits::polynomials::ProductionRank;
 use ragu_core::{drivers::Driver, pasta::Pasta};
 use ragu_primitives::Element;
-use udon::curve::Projective as _;
 
 use crate::{
-    constants::EPOCH_MAX, digest::poseidon, pasta, primitives::TachygramSetCommit,
+    constants::EPOCH_MAX,
+    pasta,
+    primitives::{TachygramSetBridge, TachygramSetCommit},
     relations::arithmetic::bounded,
 };
 
@@ -48,7 +49,7 @@ fn enforce_stamp_domain<'dr, D: Driver<'dr, F = pasta::Fp>>(
     epoch: &Element<'dr, D>,
     bridge_hash: &[Element<'dr, D>; 2],
 ) -> ragu_core::Result<()> {
-    let [low, high] = *EMPTY_STAMP_BRIDGE_HASH;
+    let &[low, high] = EMPTY_STAMP_BRIDGE_HASH.as_ref();
     let low_element = Element::constant(dr, low);
     let high_element = Element::constant(dr, high);
     let equal_low = bridge_hash[0].is_equal(dr, &mut (), &low_element)?;
@@ -58,7 +59,8 @@ fn enforce_stamp_domain<'dr, D: Driver<'dr, F = pasta::Fp>>(
         .element()
         .enforce_zero(dr)
         .map_err(|_err| ragu_core::Error::InvalidWitness("invalid anchor step".into()))?;
-    bounded::<D, 32>(dr, epoch, u64::from(EPOCH_MAX))
+    bounded::<D, 32>(dr, epoch, u64::from(EPOCH_MAX))?;
+    Ok(())
 }
 
 /// Eight payload elements for QR split, selection and bucket headers, plus one
@@ -131,10 +133,9 @@ fn register_step<S: Step<Pasta> + 'static>(
 
 lazy_static! {
     /// Fixed by the baked parameters and production rank, independently of PCD setup.
-    static ref EMPTY_STAMP_BRIDGE_HASH: [pasta::Fp; 2] = {
+    static ref EMPTY_STAMP_BRIDGE_HASH: TachygramSetBridge = {
         #[expect(clippy::expect_used, reason = "the fixed setup has finite bridge generators")]
-        poseidon::bridge_hash(TachygramSetCommit::default().as_ref().to_affine())
-            .expect("valid constant-one bridge hash")
+        TachygramSetCommit::default().bridge().expect("valid constant-one bridge hash")
     };
 }
 

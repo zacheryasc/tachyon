@@ -115,7 +115,7 @@ impl Step<Pasta> for OutputBind {
                 .as_ref()
                 .map(|data| Fp::from(u64::from(data.0.value))),
         )?;
-        circuit::bounded::<D, 51>(dr, &amount, MAX_MONEY)?;
+        let amount_bits = circuit::bounded::<D, 51>(dr, &amount, MAX_MONEY)?;
         let rcm = Element::alloc(
             dr,
             &mut (),
@@ -135,9 +135,14 @@ impl Step<Pasta> for OutputBind {
         let pad = poseidon::with_driver::pad_tachygram(dr, &rcm, &pk, &amount, &psi)?;
         cm.clone().enforce_nonzero(dr)?;
         pad.clone().enforce_nonzero(dr)?;
-        let amount_bits = circuit::bits::<D, 51>(dr, &amount)?;
-        let rcv_bits = circuit::scalar_bits(dr, &witness.as_ref().map(|data| Fq::from(data.1)))?;
-        let cv = curve::commitment(dr, &amount_bits, &rcv_bits, true)?;
+        let rcv_bits =
+            curve::fixed_base::free_bits(dr, &witness.as_ref().map(|data| Fq::from(data.1)))?;
+        let cv = curve::fixed_base::commitment(
+            dr,
+            &curve::fixed_base::NEG_V_TABLE,
+            &amount_bits,
+            &rcv_bits,
+        )?;
         let output = D::just(|| {
             (
                 Tachygram::from(*cm.value().take()),

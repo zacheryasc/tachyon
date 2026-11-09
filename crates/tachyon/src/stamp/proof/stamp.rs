@@ -4,6 +4,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+use lazy_static::lazy_static;
 use ragu::{
     header::{Header, Suffix},
     step::{Encoded, HeaderInput, Index, Oracles, Slot, Step},
@@ -15,10 +16,7 @@ use ragu_core::{
     pasta::Pasta,
 };
 use ragu_primitives::{Element, GadgetExt as _, Point, allocator::Allocator, io::Write};
-use udon::{
-    curve::{Affine as _, Projective as _},
-    field::Field as _,
-};
+use udon::{curve::Affine as _, field::Field as _};
 
 use super::{output::OutputHeader, pool::AnchorSpan, spend::SpendHeader};
 use crate::{
@@ -26,10 +24,10 @@ use crate::{
     constants::MAX_MONEY,
     digest::poseidon,
     entropy::ActionEntropy,
-    keys::{ProofAuthorizingKey, private, public::ACTION_AUTH_GENERATOR},
+    keys::{ProofAuthorizingKey, private},
     note::{self, Note},
-    pasta::{EpAffine, Eq, Fp},
-    primitives::{ActionDigest, Anchor, TachygramSetCommit, effect},
+    pasta::{EpAffine, Fp, Fq},
+    primitives::{ActionDigest, Anchor, TachygramSetBridge, TachygramSetCommit, effect},
     relations::{
         arithmetic as circuit, curve,
         enforce::{enforce_poly_equal, enforce_poly_product, enforce_poly_roots},
@@ -101,7 +99,7 @@ pub struct StampOutput<'dr, D: Driver<'dr>> {
 
 impl Header<Fp> for Stamp {
     /// `(stamp_tg_commit, anchor)`
-    type Data = ([Fp; 2], Anchor);
+    type Data = (TachygramSetBridge, Anchor);
     type Output = Kind![Fp; StampOutput<'_, _>];
 
     const SUFFIX: Suffix = Suffix::new(6);
@@ -118,8 +116,16 @@ impl Header<Fp> for Stamp {
                 witness.as_ref().map(|fields| Fp::from(fields.1)),
             )?,
             stamp_tg_commit: [
-                Element::alloc(dr, allocator, witness.as_ref().map(|fields| fields.0[0]))?,
-                Element::alloc(dr, allocator, witness.as_ref().map(|fields| fields.0[1]))?,
+                Element::alloc(
+                    dr,
+                    allocator,
+                    witness.as_ref().map(|fields| fields.0.as_ref()[0]),
+                )?,
+                Element::alloc(
+                    dr,
+                    allocator,
+                    witness.as_ref().map(|fields| fields.0.as_ref()[1]),
+                )?,
             ],
         })
     }
@@ -134,11 +140,8 @@ impl Stamp {
     pub fn header(
         commitment: TachygramSetCommit,
         anchor: Anchor,
-    ) -> ragu_core::Result<([Fp; 2], Anchor)> {
-        Ok((
-            poseidon::bridge_hash(Eq::from(commitment).to_affine())?,
-            anchor,
-        ))
+    ) -> ragu_core::Result<(TachygramSetBridge, Anchor)> {
+        Ok((commitment.bridge()?, anchor))
     }
 
     fn output<'dr, D: Driver<'dr, F = Fp>, const HEADER_SIZE: usize>(
@@ -150,7 +153,12 @@ impl Stamp {
     ) {
         let [x, y] = oracles.bridge_hash().each_ref().map(Element::value);
         let anchor_value = anchor.value();
-        let data = D::just(|| ([*x.take(), *y.take()], Anchor::from(*anchor_value.take())));
+        let data = D::just(|| {
+            (
+                [*x.take(), *y.take()].into(),
+                Anchor::from(*anchor_value.take()),
+            )
+        });
         let encoded = Encoded::from_gadget(StampOutput {
             anchor,
             stamp_tg_commit: oracles.bridge_hash().clone(),
@@ -245,8 +253,8 @@ impl Step<Pasta> for OutputAction {
         let theta = Element::alloc(dr, &mut (), witness.as_ref().map(|data| data.0.0))?;
         let alpha = poseidon::with_driver::alpha_output(dr, &theta, &cm_root)?;
         let alpha_bits = circuit::bits::<D, 255>(dr, &alpha)?;
-        let generator = Point::constant(dr, *ACTION_AUTH_GENERATOR)?;
-        let rk = curve::scale(dr, &generator, &alpha_bits)?;
+        let scaled = curve::fixed_base::walk(dr, &curve::fixed_base::G_TABLE, &alpha_bits)?;
+        let rk = curve::finish(dr, &scaled)?;
         let cv = left_encoded.as_gadget().cv.clone();
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
         let [rk_x, rk_y] = curve::coordinates(dr, &rk)?;
@@ -395,10 +403,8 @@ impl Step<Pasta> for SpendAction {
         let theta = Element::alloc(dr, &mut (), witness.as_ref().map(|data| data.0.0))?;
         let alpha = poseidon::with_driver::alpha_spend(dr, &theta, &cm)?;
         let alpha_bits = circuit::bits::<D, 255>(dr, &alpha)?;
-        let generator = Point::constant(dr, *ACTION_AUTH_GENERATOR)?;
         let ak_complete = curve::from_point(dr, &ak)?;
-        let generator_complete = curve::from_point(dr, &generator)?;
-        let scaled = curve::scale_complete(dr, &generator_complete, &alpha_bits)?;
+        let scaled = curve::fixed_base::walk(dr, &curve::fixed_base::G_TABLE, &alpha_bits)?;
         let rk_complete = curve::add_complete(dr, &ak_complete, &scaled)?;
         let rk = curve::finish(dr, &rk_complete)?;
         let cv = left_encoded.as_gadget().cv.clone();
@@ -773,6 +779,14 @@ impl Step<Pasta> for ActionLift {
 #[derive(Debug)]
 pub struct FeeFuse;
 
+lazy_static! {
+    // s = MAX_MONEY - maximum, so the corrected walk computes [-maximum]V.
+    static ref FEE_V_TABLE: curve::fixed_base::Table<24> = curve::fixed_base::table(
+        *value::VALUE_COMMIT_V,
+        -*value::VALUE_COMMIT_V * Fq::from(MAX_MONEY)
+    );
+}
+
 impl Step<Pasta> for FeeFuse {
     type Aux<'source> = ();
     type Left = Actions;
@@ -839,21 +853,23 @@ impl Step<Pasta> for FeeFuse {
                 .as_ref()
                 .map(|data| Fp::from(u64::from(data.0.value))),
         )?;
-        circuit::bounded::<D, 51>(dr, &maximum, MAX_MONEY).map_err(|_err| {
-            ragu_core::Error::InvalidWitness("FeeFuse: maximum fee exceeds MAX_MONEY".into())
-        })?;
         let fee = Element::alloc(
             dr,
             &mut (),
             witness.as_ref().map(|data| Fp::from(u64::from(data.1))),
         )?;
-        circuit::bounded::<D, 51>(dr, &fee, MAX_MONEY)?;
-        // `maxfee` and `fee` are below 2^64, far below the field modulus, so the
-        // field difference lies in [0, MAX_MONEY] exactly when the integer
-        // difference does.
+        // The three 51-bit slacks f, c and s sum identically to MAX_MONEY.
+        // Their integer sum is below p, excluding field wraparound and proving
+        // 0 <= fee <= maximum <= MAX_MONEY.
+        circuit::bits::<D, 51>(dr, &fee)?;
         let change = maximum.sub(dr, &fee);
-        circuit::bounded::<D, 51>(dr, &change, MAX_MONEY).map_err(|_err| {
+        circuit::bits::<D, 51>(dr, &change).map_err(|_err| {
             ragu_core::Error::InvalidWitness("FeeFuse: change is out of range".into())
+        })?;
+        let bound = Element::constant(dr, Fp::from(MAX_MONEY));
+        let slack = bound.sub(dr, &maximum);
+        let slack_bits = circuit::bits::<D, 51>(dr, &slack).map_err(|_err| {
+            ragu_core::Error::InvalidWitness("FeeFuse: maximum fee exceeds MAX_MONEY".into())
         })?;
         let pk = Element::alloc(
             dr,
@@ -875,9 +891,11 @@ impl Step<Pasta> for FeeFuse {
         for (index, actual) in [&pk, &psi, &rcm, &maximum, &fee].into_iter().enumerate() {
             actual.enforce_equal(dr, &oracles.staged()[index])?;
         }
-        let maximum_bits = circuit::bits::<D, 51>(dr, &maximum)?;
         let blind_bits = circuit::bits::<D, 255>(dr, &blind)?;
-        let cv = curve::commitment(dr, &maximum_bits, &blind_bits, true)?;
+        let blind_point = curve::fixed_base::walk(dr, &curve::fixed_base::R_TABLE, &blind_bits)?;
+        let value_point = curve::fixed_base::walk(dr, &FEE_V_TABLE, &slack_bits)?;
+        let sum = curve::add_complete(dr, &blind_point, &value_point)?;
+        let cv = curve::finish(dr, &sum)?;
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
         let fee_digest = poseidon::with_driver::fee_digest(dr, (&cv_x, &cv_y), &fee)?;
         let fee_change = poseidon::with_driver::note_commitment(dr, &rcm, &pk, &change, &psi)?;
@@ -1007,8 +1025,8 @@ impl Step<Pasta> for FeeSeed {
             actual.enforce_equal(dr, &oracles.staged()[index])?;
         }
         let blind_bits = circuit::bits::<D, 255>(dr, &blind)?;
-        let blind_generator = Point::constant(dr, value::VALUE_COMMIT_R.to_affine())?;
-        let cv = curve::scale(dr, &blind_generator, &blind_bits)?;
+        let scaled = curve::fixed_base::walk(dr, &curve::fixed_base::R_TABLE, &blind_bits)?;
+        let cv = curve::finish(dr, &scaled)?;
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
         let zero = Element::constant(dr, Fp::ZERO);
         let fee_digest = poseidon::with_driver::fee_digest(dr, (&cv_x, &cv_y), &zero)?;

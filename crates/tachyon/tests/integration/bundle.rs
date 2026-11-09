@@ -9,8 +9,6 @@ use alloc::{
 use core::{assert_matches, cmp::Reverse};
 
 use corez::io;
-use ragu_circuits::polynomials::ProductionRank;
-use ragu_core::pasta::Pasta;
 use rand::{SeedableRng as _, rngs::StdRng};
 use zcash_tachyon::{
     BlockHeight, SignatureError, Tachygram, action,
@@ -21,7 +19,7 @@ use zcash_tachyon::{
     entropy::ActionEntropy,
     keys::private,
     pasta::Fp,
-    stamp::{AggregateId, PointerStamp, ProofStamp, ProveError},
+    stamp::{self, AggregateId, PointerStamp, ProofStamp, ProveError},
     value, *,
 };
 
@@ -284,7 +282,7 @@ fn duplicated_spend_cannot_inflate() {
 
     let mut buf = Vec::new();
     bundle.write(&mut buf).unwrap();
-    let decoded = Bundle::<ProofStamp<ragu::Proof<Pasta, ProductionRank>>>::read(&*buf).unwrap();
+    let decoded = Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*buf).unwrap();
 
     decoded
         .verify_signatures(&mock_sighash(decoded.commitment()))
@@ -490,7 +488,7 @@ fn stamped_bundle_round_trips() {
     let stamped = build_autonome(application, rng, &wallet, 1000, 700);
     let mut buf = Vec::new();
     stamped.write(&mut buf).unwrap();
-    let decoded = Bundle::<ProofStamp<ragu::Proof<Pasta, ProductionRank>>>::read(&*buf).unwrap();
+    let decoded = Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*buf).unwrap();
     assert_eq!(
         TachyonBundle::read(&*buf).unwrap_err().kind(),
         io::ErrorKind::InvalidData
@@ -527,7 +525,7 @@ fn stamped_bundle_round_trips() {
     let erased = TachyonBundle::from(compressed);
     erased.write(&mut erased_buf).unwrap();
     assert_eq!(erased_buf, bytes);
-    let mut block = Bundle::<ProofStamp<ragu::CompressedProof<Pasta>>>::read(&*bytes).unwrap();
+    let mut block = Bundle::<ProofStamp<stamp::Compressed>>::read(&*bytes).unwrap();
     assert_eq!(TachyonBundle::read(&*bytes).unwrap(), erased);
     Bundle::<PointerStamp>::try_from(erased).unwrap_err();
     let sighash = mock_sighash(block.commitment());
@@ -652,7 +650,7 @@ fn bundle_state_mismatches_are_rejected() {
 
     let buf: &[u8] = &[0x03];
     for err in [
-        Bundle::<ProofStamp<ragu::Proof<Pasta, ProductionRank>>>::read(buf).unwrap_err(),
+        Bundle::<ProofStamp<stamp::Uncompressed>>::read(buf).unwrap_err(),
         Bundle::<PointerStamp>::read(buf).unwrap_err(),
         TachyonBundle::read(buf).unwrap_err(),
     ] {
@@ -677,13 +675,12 @@ fn bundle_state_mismatches_are_rejected() {
         "unexpected tachyonBundleState"
     );
     assert_eq!(
-        Bundle::<ProofStamp<ragu::Proof<Pasta, ProductionRank>>>::read(&*adjunct_buf)
+        Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*adjunct_buf)
             .unwrap_err()
             .to_string(),
         "unexpected tachyonBundleState"
     );
-    Bundle::<ProofStamp<ragu::CompressedProof<Pasta>>>::try_from(TachyonBundle::from(adjunct))
-        .unwrap_err();
+    Bundle::<ProofStamp<stamp::Compressed>>::try_from(TachyonBundle::from(adjunct)).unwrap_err();
 }
 
 #[test]
@@ -739,7 +736,7 @@ fn read_rejects_noncanonical_tachygrams() {
     let (head, tail) = buf.split_at_mut(last);
     head[first..first + 32].swap_with_slice(&mut tail[..32]);
 
-    let err = Bundle::<ProofStamp<ragu::Proof<Pasta, ProductionRank>>>::read(&*buf).unwrap_err();
+    let err = Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*buf).unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     assert_eq!(err.to_string(), "tachygrams are not canonically sorted");
 }
@@ -810,7 +807,7 @@ fn read_bounds_the_value_balance() {
 
     for value_balance in [max_money, -max_money] {
         buf[1..9].copy_from_slice(&value_balance.to_le_bytes());
-        let decoded: i64 = Bundle::<ProofStamp<ragu::Proof<Pasta, ProductionRank>>>::read(&*buf)
+        let decoded: i64 = Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*buf)
             .unwrap()
             .value_balance
             .into();
@@ -819,7 +816,7 @@ fn read_bounds_the_value_balance() {
     for value_balance in [max_money + 1, -max_money - 1, i64::MAX, i64::MIN] {
         buf[1..9].copy_from_slice(&value_balance.to_le_bytes());
         for err in [
-            Bundle::<ProofStamp<ragu::Proof<Pasta, ProductionRank>>>::read(&*buf).unwrap_err(),
+            Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*buf).unwrap_err(),
             TachyonBundle::read(&*buf).unwrap_err(),
         ] {
             assert_eq!(err.kind(), io::ErrorKind::InvalidData);
@@ -911,7 +908,7 @@ fn memo_round_trips_and_rejects_truncation() {
         let mut buf = Vec::new();
         bundle.write(&mut buf).unwrap();
         assert_eq!(
-            Bundle::<ProofStamp<ragu::Proof<Pasta, ProductionRank>>>::read(&*buf)
+            Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*buf)
                 .unwrap()
                 .memo,
             memo
@@ -922,7 +919,7 @@ fn memo_round_trips_and_rejects_truncation() {
     let mut buf = Vec::new();
     bundle.write(&mut buf).unwrap();
     buf.truncate(1024);
-    let err = Bundle::<ProofStamp<ragu::Proof<Pasta, ProductionRank>>>::read(&*buf).unwrap_err();
+    let err = Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*buf).unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
 }
 
@@ -1132,7 +1129,7 @@ fn bundle_lift_over_an_aggregate() {
 
     let mut bytes = Vec::new();
     lifted.write(&mut bytes).unwrap();
-    let decoded = Bundle::<ProofStamp<ragu::Proof<Pasta, ProductionRank>>>::read(&*bytes).unwrap();
+    let decoded = Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*bytes).unwrap();
     assert!(decoded.verify_proof(application, rng, &digests).unwrap());
     let compressed = decoded
         .stamp
@@ -1145,7 +1142,7 @@ fn bundle_lift_over_an_aggregate() {
         .unwrap();
     bytes.clear();
     compressed.write(&mut bytes).unwrap();
-    let decoded_stamp = ProofStamp::<ragu::CompressedProof<Pasta>>::read(&*bytes).unwrap();
+    let decoded_stamp = ProofStamp::<stamp::Compressed>::read(&*bytes).unwrap();
     assert!(
         decoded_stamp
             .verify_proof(application, rng, digests)

@@ -114,8 +114,8 @@ use crate::{
     primitives::{Anchor, effect},
     reddsa, serialization,
     stamp::{
-        self, AggregateId, AggregateIdError, PointerStamp, ProofStamp, ProveError, StampProof,
-        StampState, Unproven,
+        self, AggregateId, AggregateIdError, PointerStamp, ProofStamp, ProveError, StampState,
+        Unproven,
         proof::{HEADER_SIZE, pool},
     },
     value,
@@ -165,7 +165,7 @@ impl StateByte {
 mod sealed {
     pub trait Sealed {}
     impl Sealed for super::Unproven {}
-    impl<P: super::StampProof> Sealed for super::ProofStamp<P> {}
+    impl<P: super::stamp::Proof> Sealed for super::ProofStamp<P> {}
     impl Sealed for super::PointerStamp {}
 }
 
@@ -602,8 +602,8 @@ impl Bundle<Unproven> {
     #[must_use]
     pub fn stamp(
         self,
-        stamp: ProofStamp<ragu::Proof<Pasta, ProductionRank>>,
-    ) -> Bundle<ProofStamp<ragu::Proof<Pasta, ProductionRank>>> {
+        stamp: ProofStamp<stamp::Uncompressed>,
+    ) -> Bundle<ProofStamp<stamp::Uncompressed>> {
         Bundle {
             actions: self.actions,
             value_balance: self.value_balance,
@@ -615,7 +615,7 @@ impl Bundle<Unproven> {
     }
 }
 
-impl Bundle<ProofStamp<ragu::Proof<Pasta, ProductionRank>>> {
+impl Bundle<ProofStamp<stamp::Uncompressed>> {
     /// Replace the stamp with a wtxid pointer to a covering aggregate.
     #[must_use]
     pub fn strip(self, wtxid: AggregateId) -> Bundle<PointerStamp> {
@@ -664,7 +664,7 @@ impl Bundle<ProofStamp<ragu::Proof<Pasta, ProductionRank>>> {
     }
 }
 
-impl<P: StampProof> Bundle<ProofStamp<P>> {
+impl<P: stamp::Proof> Bundle<ProofStamp<P>> {
     /// Confirm `hStampCoverageTachyon` represents the combined actions and
     /// fee descriptors of this bundle and the given bundles.
     #[must_use]
@@ -1064,7 +1064,7 @@ pub enum TachyonBundle {
     /// No bundle.
     NoBundle,
     /// A bundle with its own proof (autonome or aggregate).
-    Proven(Bundle<ProofStamp<ragu::CompressedProof<Pasta>>>),
+    Proven(Bundle<ProofStamp<stamp::Compressed>>),
     /// A bundle with no internal proof (adjunct).
     Adjunct(Bundle<PointerStamp>),
 }

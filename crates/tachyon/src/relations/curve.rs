@@ -8,19 +8,10 @@ use ragu_core::{
     drivers::{Coeff, Driver},
     maybe::Maybe as _,
 };
-use ragu_primitives::{
-    Boolean, Element, GadgetExt as _, Point,
-    vec::{ConstLen, FixedVec},
-};
-use udon::{
-    curve::{Affine as _, Projective as _},
-    field::Field as _,
-};
+use ragu_primitives::{Boolean, Element, GadgetExt as _, Point};
+use udon::{curve::Affine as _, field::Field as _};
 
-use crate::{
-    pasta::{EpAffine, Fp},
-    value,
-};
+use crate::pasta::{EpAffine, Fp};
 
 // Only the complete arithmetic below uses an infinity flag. Header fields
 // and the exported results remain finite `Point`s.
@@ -111,27 +102,6 @@ pub(crate) fn add_complete<'dr, D: Driver<'dr, F = Fp>>(
     select(dr, &right.infinity, &left_corrected, left)
 }
 
-pub(crate) fn scale_complete<'dr, D: Driver<'dr, F = Fp>, const N: usize>(
-    dr: &mut D,
-    base: &CompletePoint<'dr, D>,
-    bits: &FixedVec<Boolean<'dr, D>, ConstLen<N>>,
-) -> Result<CompletePoint<'dr, D>> {
-    let zero_x = Element::constant(dr, Fp::ZERO);
-    let zero_y = Element::constant(dr, Fp::ZERO);
-    let infinity = zero_x.is_zero(dr, &mut ())?;
-    let mut acc = CompletePoint {
-        x: zero_x,
-        y: zero_y,
-        infinity,
-    };
-    for bit in bits.iter().rev().take(N) {
-        let doubled = add_complete(dr, &acc, &acc)?;
-        let added = add_complete(dr, &doubled, base)?;
-        acc = select(dr, bit, &doubled, &added)?;
-    }
-    Ok(acc)
-}
-
 pub(crate) fn finish<'dr, D: Driver<'dr, F = Fp>>(
     dr: &mut D,
     computed: &CompletePoint<'dr, D>,
@@ -149,36 +119,7 @@ pub(crate) fn finish<'dr, D: Driver<'dr, F = Fp>>(
     Ok(point)
 }
 
-pub(crate) fn scale<'dr, D: Driver<'dr, F = Fp>, const N: usize>(
-    dr: &mut D,
-    base: &Point<'dr, D, EpAffine>,
-    bits: &FixedVec<Boolean<'dr, D>, ConstLen<N>>,
-) -> Result<Point<'dr, D, EpAffine>> {
-    let complete = from_point(dr, base)?;
-    let computed = scale_complete(dr, &complete, bits)?;
-    finish(dr, &computed)
-}
-
-pub(crate) fn commitment<'dr, D: Driver<'dr, F = Fp>, const N: usize, const M: usize>(
-    dr: &mut D,
-    amount_bits: &FixedVec<Boolean<'dr, D>, ConstLen<N>>,
-    blind_bits: &FixedVec<Boolean<'dr, D>, ConstLen<M>>,
-    negative: bool,
-) -> Result<Point<'dr, D, EpAffine>> {
-    let generator = if negative {
-        -*value::VALUE_COMMIT_V
-    } else {
-        *value::VALUE_COMMIT_V
-    };
-    let value_generator = Point::constant(dr, generator.to_affine())?;
-    let blind_generator = Point::constant(dr, value::VALUE_COMMIT_R.to_affine())?;
-    let value_complete = from_point(dr, &value_generator)?;
-    let blind_complete = from_point(dr, &blind_generator)?;
-    let value_point = scale_complete(dr, &value_complete, amount_bits)?;
-    let blind_point = scale_complete(dr, &blind_complete, blind_bits)?;
-    let computed = add_complete(dr, &value_point, &blind_point)?;
-    finish(dr, &computed)
-}
-
 #[cfg(test)]
 mod tests;
+
+pub(crate) mod fixed_base;
