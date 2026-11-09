@@ -35,7 +35,8 @@ use crate::{
     digest::poseidon,
     pasta::Fp,
     primitives::{
-        Anchor, EpochIndex, EvidenceTreeRoot, QrDiscriminant, QrProfile, TachygramSetPoly,
+        Anchor, EpochIndex, EvidenceTreeRoot, QrDiscriminant, QrProfile, TachygramSetBridge,
+        TachygramSetPoly,
     },
     relations::enforce::enforce_poly_equal,
 };
@@ -790,21 +791,19 @@ impl Step<Pasta> for EvidenceTreeOpen {
         ];
         enforce_poly_equal(dr, oracles, Slot::output(0), Slot::output(1))?;
         let contents_hash = oracles.bridge_hash().clone();
-        let output = D::just(|| {
+        let [hash_x, hash_y] = contents_hash.each_ref().map(Element::value);
+        let output = D::try_just(|| {
             let (carrier_profile, _) = witness.take();
             let (epoch, anchor_start, anchor_next, discriminant, _) = left.clone().take();
-            (
+            Ok((
                 epoch,
                 anchor_start,
                 anchor_next,
                 discriminant,
                 carrier_profile,
-                contents_hash
-                    .clone()
-                    .map(|value| *value.value().take())
-                    .into(),
-            )
-        });
+                TachygramSetBridge::from_xy(*hash_x.take(), *hash_y.take())?,
+            ))
+        })?;
         let expected = left_encoded.as_gadget().root.clone();
         let fields = [
             left_encoded.as_gadget().epoch.clone(),
