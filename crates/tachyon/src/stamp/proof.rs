@@ -44,6 +44,10 @@ use crate::{
 };
 
 /// Step admission checks for the stamp's epoch and nonempty tachygram set.
+///
+/// On Ragu #944 the in-circuit bridge hash is not unique to O1: a non-canonical
+/// encoding of the empty set passes this guard. The guard is a backstop;
+/// consensus rejects anchors outside the natively folded canonical chain.
 fn enforce_stamp_domain<'dr, D: Driver<'dr, F = pasta::Fp>>(
     dr: &mut D,
     epoch: &Element<'dr, D>,
