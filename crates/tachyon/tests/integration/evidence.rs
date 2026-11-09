@@ -55,6 +55,20 @@ fn evidence_tree_admission_rejects_substituted_contents() {
             .unwrap();
         assert!(!application.verify_uncompressed(&forged, &mut *rng).unwrap());
     }
+    let (accepted, ()) = application
+        .fuse(
+            rng,
+            evidence::EvidenceTreeLeafPair,
+            (),
+            bucket.pcd.clone(),
+            bucket.pcd.clone(),
+        )
+        .unwrap();
+    assert!(
+        application
+            .verify_uncompressed(&accepted, &mut *rng)
+            .unwrap()
+    );
     let replacement: TachygramSetPoly = iter::once(Tachygram::random(rng)).collect();
     let mut forged_header = *bucket.pcd.data();
     forged_header.5 = replacement.commit().bridge().unwrap();

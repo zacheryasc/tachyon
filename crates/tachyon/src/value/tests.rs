@@ -5,6 +5,7 @@ use rand::{SeedableRng as _, rngs::StdRng};
 use super::*;
 use crate::{
     entropy::ActionEntropy,
+    fee,
     keys::{PaymentKey, private},
     note::{self, Note},
     nullifier,
@@ -67,21 +68,40 @@ fn fee_fuse_rejects_maximum_above_max_money() {
         )
         .unwrap();
 
-    // Hand-build the raw Value, bypassing Positive's cap. Both cases use the
-    // correct output sets and an in-range change note; only the maximum crosses
-    // the bound. Real proving records the assignment; verification rejects it.
+    // Bypass Positive's cap but keep the change in range. Match the fee digest
+    // to the walk's low 51 slack bits, even for field -1, so the action-set check
+    // passes independently of slack reconstruction. Only that bound rejects.
     for maximum in [MAX_MONEY, MAX_MONEY + 1] {
         let fee_note = Note {
             value: Value(i64::try_from(maximum).unwrap()),
             ..note
         };
-        let fee_witness = witness::fee_fuse(
+        let mut fee_witness = witness::fee_fuse(
             (*actions.data(), ()),
             fee_note,
             Positive::try_from(1u64).unwrap(),
             &BTreeSet::from([digest]),
             &BTreeSet::from([cm, pad]),
         );
+        let slack = Fp::from(MAX_MONEY) - Fp::from(maximum);
+        let truncated_slack = slack
+            .to_le_bits()
+            .as_ref()
+            .iter()
+            .take(51)
+            .enumerate()
+            .fold(0u64, |value, (index, bit)| {
+                value | (u64::from(*bit) << index)
+            });
+        let walk_value =
+            Balance::try_from(i128::from(truncated_slack) - i128::from(MAX_MONEY)).unwrap();
+        let walk_digest = fee::Descriptor {
+            max_commitment: fee_note.fee_blind().commit(walk_value),
+            value: fee_witness.1,
+        }
+        .digest()
+        .unwrap();
+        fee_witness.2.0 = [digest, walk_digest].into_iter().collect();
         let (pcd, ()) = application
             .fuse(
                 rng,
