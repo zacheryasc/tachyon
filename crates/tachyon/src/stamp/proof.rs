@@ -35,23 +35,8 @@ use ragu_primitives::{ENDOSCALAR_BITS, ENDOSCALAR_PRODUCTS, Element};
 use udon::curve::{Affine, Projective as _};
 
 use crate::{
-    constants::EPOCH_MAX,
-    keys::public::ACTION_AUTH_GENERATOR,
-    pasta,
-    primitives::TachygramSetBridge,
-    relations::{arithmetic::bounded, curve::fixed_base},
-    value,
+    constants::EPOCH_MAX, pasta, primitives::TachygramSetBridge, relations::arithmetic::bounded,
 };
-
-lazy_static! {
-    static ref R_TABLE: fixed_base::Table<85> = fixed_base::table(*value::VALUE_COMMIT_R, None);
-    static ref G_TABLE: fixed_base::Table<85> =
-        fixed_base::table(ACTION_AUTH_GENERATOR.to_projective(), None);
-    static ref V_TABLE: fixed_base::Table<17> =
-        fixed_base::amount_table(*value::VALUE_COMMIT_V, pasta::Ep::identity());
-    static ref NEG_V_TABLE: fixed_base::Table<17> =
-        fixed_base::amount_table(-*value::VALUE_COMMIT_V, pasta::Ep::identity());
-}
 
 /// Prepares the constant-one commitment's bridge hash without an application.
 fn empty_stamp_bridge_hash(
