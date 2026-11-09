@@ -695,11 +695,12 @@ fn merge_qr_run<RNG: CryptoRng>(
     merged
 }
 
-pub(crate) fn split_qr_intake<RNG: CryptoRng>(
+pub(crate) fn split_qr_intake<RNG: CryptoRng, const N: usize>(
     application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
     rng: &mut RNG,
     intake: QrIntakeEntry,
-) -> (QrIntakeEntry, QrIntakeEntry) {
+    kept: [bool; N],
+) -> [QrIntakeEntry; N] {
     let (_epoch, _anchor_prev, _anchor_end, discriminant, profile) = *intake.pcd.data();
     let split_witness = witness::qr_intake_split((*intake.pcd.data(), ()), &intake.members);
     let (sides, ()) = application
@@ -712,7 +713,7 @@ pub(crate) fn split_qr_intake<RNG: CryptoRng>(
         )
         .unwrap();
 
-    let mut descend = |side: bool| {
+    kept.map(|side| {
         let (selection, ()) = application
             .fuse(
                 rng,
@@ -740,10 +741,7 @@ pub(crate) fn split_qr_intake<RNG: CryptoRng>(
             )
             .unwrap();
         QrIntakeEntry { pcd, members }
-    };
-    let non_residue = descend(false);
-    let residue = descend(true);
-    (non_residue, residue)
+    })
 }
 
 pub(crate) fn build_qr_partition<RNG: CryptoRng>(
@@ -760,7 +758,7 @@ pub(crate) fn build_qr_partition<RNG: CryptoRng>(
         let mut residue = Vec::new();
         let mut non_residue = Vec::new();
         for intake in layer {
-            let (nqr_side, qr_side) = split_qr_intake(application, rng, intake);
+            let [nqr_side, qr_side] = split_qr_intake(application, rng, intake, [false, true]);
             non_residue.push(nqr_side);
             residue.push(qr_side);
         }
@@ -983,11 +981,11 @@ pub(crate) fn epoch_bucket<RNG: CryptoRng>(
     application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
     rng: &mut RNG,
     pool: &PoolSim,
+    epoch: EpochIndex,
+) -> QrBucketEntry {
     if let Some(bucket) = pool.buckets.borrow().get(&epoch) {
         return bucket.clone();
     }
-    epoch: EpochIndex,
-) -> QrBucketEntry {
     let entry = pool.block(epoch.first_block()).prev;
     let final_anchor = pool.block(epoch.last_block()).anchor();
     let anchor_final_prev = u32::from(epoch).checked_sub(1).map_or_else(
@@ -1048,8 +1046,8 @@ pub(crate) fn qr_bucket_at<RNG: CryptoRng>(
         let side = qr::classify(value, discriminant.at(level)).0;
         let mut kept = Vec::with_capacity(branch.len());
         for intake in branch {
-            let (non_residue, residue) = split_qr_intake(application, rng, intake);
-            kept.push(if side { residue } else { non_residue });
+            let [side_intake] = split_qr_intake(application, rng, intake, [side]);
+            kept.push(side_intake);
         }
         branch = merge_qr_run(application, rng, kept, capacity);
     }

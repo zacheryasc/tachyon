@@ -232,8 +232,7 @@ fn qr_side_select_checks_the_exceptional_value_at_its_depth() {
         let mut intake = QrIntakeEntry { pcd: root, members };
         for level in 0..depth {
             let side = qr::classify(value, discriminant.at(level)).0;
-            let (non_residue_side, residue_side) = split_qr_intake(application, rng, intake);
-            intake = if side { residue_side } else { non_residue_side };
+            [intake] = split_qr_intake(application, rng, intake, [side]);
         }
         let (honest_sides, ()) = application
             .fuse(
@@ -679,8 +678,7 @@ fn qr_side_descend_refuses_a_full_register() {
         members: members.to_vec(),
     };
     for _ in 0..QrProfile::MAX_DEPTH {
-        let (_non_residue, residue) = split_qr_intake(application, rng, intake);
-        intake = residue;
+        [intake] = split_qr_intake(application, rng, intake, [true]);
     }
     let (.., profile) = *intake.pcd.data();
     assert_eq!(
