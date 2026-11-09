@@ -35,26 +35,13 @@ use ragu::{Application, ApplicationBuilder, RegistryTags, step::Step};
 use ragu_circuits::polynomials::ProductionRank;
 use ragu_core::{drivers::Driver, pasta::Pasta};
 use ragu_primitives::Element;
-use udon::curve::{Affine as _, Projective as _};
 
 use crate::{
     constants::EPOCH_MAX,
-    keys::public::ACTION_AUTH_GENERATOR,
     pasta,
     primitives::{TachygramSetBridge, TachygramSetCommit},
-    relations::{arithmetic::bounded, curve::fixed_base},
-    value,
+    relations::arithmetic::bounded,
 };
-
-lazy_static! {
-    static ref R_TABLE: fixed_base::Table<85> = fixed_base::table(*value::VALUE_COMMIT_R, None);
-    static ref G_TABLE: fixed_base::Table<85> =
-        fixed_base::table(ACTION_AUTH_GENERATOR.to_projective(), None);
-    static ref V_TABLE: fixed_base::Table<17> =
-        fixed_base::amount_table(*value::VALUE_COMMIT_V, pasta::Ep::identity());
-    static ref NEG_V_TABLE: fixed_base::Table<17> =
-        fixed_base::amount_table(-*value::VALUE_COMMIT_V, pasta::Ep::identity());
-}
 
 /// Step admission checks for the stamp's epoch and nonempty tachygram set.
 fn enforce_stamp_domain<'dr, D: Driver<'dr, F = pasta::Fp>>(
