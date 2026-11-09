@@ -272,7 +272,11 @@ impl Step<Pasta> for AnchorSpanSeed {
     ) -> ragu_core::Result<[Vec<Fp>; 2]> {
         let anchor_end = witness
             .0
-            .next_stamp(witness.1, &witness.2.commit())
+            .next_stamp(
+                witness.1,
+                witness.2.commit().bridge()?,
+                *super::EMPTY_STAMP_BRIDGE_HASH,
+            )
             .map_err(|_err| ragu_core::Error::InvalidWitness("invalid anchor step".into()))?;
         Ok([
             AnchorSetPoly::from_iter([anchor_end])

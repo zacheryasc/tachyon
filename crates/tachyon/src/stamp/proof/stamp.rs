@@ -16,10 +16,7 @@ use ragu_core::{
     pasta::Pasta,
 };
 use ragu_primitives::{Element, GadgetExt as _, Point, allocator::Allocator, io::Write};
-use udon::{
-    curve::{Affine as _, Projective as _},
-    field::Field as _,
-};
+use udon::{curve::Affine as _, field::Field as _};
 
 use super::{output::OutputHeader, pool::AnchorSpan, spend::SpendHeader};
 use crate::{
@@ -29,8 +26,8 @@ use crate::{
     entropy::ActionEntropy,
     keys::{ProofAuthorizingKey, private},
     note::{self, Note},
-    pasta::{EpAffine, Eq, Fp, Fq},
-    primitives::{ActionDigest, Anchor, TachygramSetCommit, effect},
+    pasta::{EpAffine, Fp, Fq},
+    primitives::{ActionDigest, Anchor, TachygramSetBridgeHash, TachygramSetCommit, effect},
     relations::{
         arithmetic as circuit, curve,
         enforce::{enforce_poly_equal, enforce_poly_product, enforce_poly_roots},
@@ -102,7 +99,7 @@ pub struct StampOutput<'dr, D: Driver<'dr>> {
 
 impl Header<Fp> for Stamp {
     /// `(stamp_tg_commit, anchor)`
-    type Data = ([Fp; 2], Anchor);
+    type Data = (TachygramSetBridgeHash, Anchor);
     type Output = Kind![Fp; StampOutput<'_, _>];
 
     const SUFFIX: Suffix = Suffix::new(6);
@@ -119,8 +116,16 @@ impl Header<Fp> for Stamp {
                 witness.as_ref().map(|fields| Fp::from(fields.1)),
             )?,
             stamp_tg_commit: [
-                Element::alloc(dr, allocator, witness.as_ref().map(|fields| fields.0[0]))?,
-                Element::alloc(dr, allocator, witness.as_ref().map(|fields| fields.0[1]))?,
+                Element::alloc(
+                    dr,
+                    allocator,
+                    witness.as_ref().map(|fields| fields.0.as_ref()[0]),
+                )?,
+                Element::alloc(
+                    dr,
+                    allocator,
+                    witness.as_ref().map(|fields| fields.0.as_ref()[1]),
+                )?,
             ],
         })
     }
@@ -135,11 +140,8 @@ impl Stamp {
     pub fn header(
         commitment: TachygramSetCommit,
         anchor: Anchor,
-    ) -> ragu_core::Result<([Fp; 2], Anchor)> {
-        Ok((
-            poseidon::bridge_hash(Eq::from(commitment).to_affine())?,
-            anchor,
-        ))
+    ) -> ragu_core::Result<(TachygramSetBridgeHash, Anchor)> {
+        Ok((commitment.bridge()?, anchor))
     }
 
     fn output<'dr, D: Driver<'dr, F = Fp>, const HEADER_SIZE: usize>(
@@ -151,7 +153,12 @@ impl Stamp {
     ) {
         let [x, y] = oracles.bridge_hash().each_ref().map(Element::value);
         let anchor_value = anchor.value();
-        let data = D::just(|| ([*x.take(), *y.take()], Anchor::from(*anchor_value.take())));
+        let data = D::just(|| {
+            (
+                [*x.take(), *y.take()].into(),
+                Anchor::from(*anchor_value.take()),
+            )
+        });
         let encoded = Encoded::from_gadget(StampOutput {
             anchor,
             stamp_tg_commit: oracles.bridge_hash().clone(),

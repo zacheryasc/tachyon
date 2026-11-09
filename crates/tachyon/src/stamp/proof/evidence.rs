@@ -799,7 +799,10 @@ impl Step<Pasta> for EvidenceTreeOpen {
                 anchor_next,
                 discriminant,
                 carrier_profile,
-                contents_hash.clone().map(|value| *value.value().take()),
+                contents_hash
+                    .clone()
+                    .map(|value| *value.value().take())
+                    .into(),
             )
         });
         let expected = left_encoded.as_gadget().root.clone();

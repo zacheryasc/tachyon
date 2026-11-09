@@ -341,13 +341,15 @@ pub struct PoolSimBlock {
 impl PoolSimBlock {
     pub fn new(prev: Anchor, height: BlockHeight, stamps: Vec<Vec<Tachygram>>) -> Self {
         let epoch = height.epoch();
+        let empty_hash = TachygramSetCommit::default().bridge().unwrap();
         let mut anchor = prev;
         let entries = stamps
             .into_iter()
             .map(|tgs| {
                 let stamp_prev = anchor;
                 let commit = tgs.iter().copied().collect::<TachygramSetPoly>().commit();
-                let stamp_after = anchor.next_stamp(epoch, &commit).unwrap();
+                let stamp_hash = commit.bridge().unwrap();
+                let stamp_after = anchor.next_stamp(epoch, stamp_hash, empty_hash).unwrap();
                 anchor = stamp_after;
                 (stamp_prev, tgs, commit, stamp_after)
             })
@@ -486,7 +488,10 @@ pub(crate) fn build_anchor_span_pcd<RNG: CryptoRng>(
             .collect::<Vec<_>>()
         {
             let witness = witness::anchor_span_seed(((), ()), state, height.epoch(), tgs);
-            let next_state = state.next_stamp(witness.1, &witness.2.commit()).unwrap();
+            let empty_hash = TachygramSetCommit::default().bridge().unwrap();
+            let next_state = state
+                .next_stamp(witness.1, witness.2.commit().bridge().unwrap(), empty_hash)
+                .unwrap();
             let (seed, ()) = PROOF_SYSTEM
                 .seed(rng, pool::AnchorSpanSeed, witness)
                 .unwrap();
@@ -1278,11 +1283,16 @@ impl WalletSim {
                 .position(|tgs| tgs.contains(&cm.into()))
                 .unwrap();
 
-            let anchor_prev = pool.block(init_height).stamps[..cm_idx]
-                .iter()
-                .fold(pool.block(init_height).prev, |anchor, stamp| {
-                    anchor.next_stamp(init_height.epoch(), &stamp.2).unwrap()
-                });
+            let empty_hash = TachygramSetCommit::default().bridge().unwrap();
+            let anchor_prev = pool.block(init_height).stamps[..cm_idx].iter().fold(
+                pool.block(init_height).prev,
+                |anchor, stamp| {
+                    let stamp_hash = stamp.2.bridge().unwrap();
+                    anchor
+                        .next_stamp(init_height.epoch(), stamp_hash, empty_hash)
+                        .unwrap()
+                },
+            );
 
             (anchor_prev, stamps[cm_idx].clone())
         };

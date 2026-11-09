@@ -34,10 +34,14 @@ use ragu_core::{Cycle, FixedGenerators as _, drivers::Driver, pasta::Pasta};
 use ragu_primitives::{ENDOSCALAR_BITS, ENDOSCALAR_PRODUCTS, Element};
 use udon::curve::{Affine, Projective as _};
 
-use crate::{constants::EPOCH_MAX, pasta, relations::arithmetic::bounded};
+use crate::{
+    constants::EPOCH_MAX, pasta, primitives::TachygramSetBridgeHash, relations::arithmetic::bounded,
+};
 
 /// Prepares the constant-one commitment's bridge hash without an application.
-fn empty_stamp_bridge_hash(params: &<Pasta as Cycle>::Params) -> ragu_core::Result<[pasta::Fp; 2]> {
+fn empty_stamp_bridge_hash(
+    params: &<Pasta as Cycle>::Params,
+) -> ragu_core::Result<TachygramSetBridgeHash> {
     let (x, y) = Pasta::host_generators(params)
         .g()
         .first()
@@ -58,7 +62,7 @@ fn empty_stamp_bridge_hash(params: &<Pasta as Cycle>::Params) -> ragu_core::Resu
     commitment
         .to_affine()
         .coordinates()
-        .map(Into::into)
+        .map(|coordinates| <[pasta::Fp; 2]>::from(coordinates).into())
         .ok_or_else(|| {
             ragu_core::Error::Initialization("constant-one bridge hash is not finite".into())
         })
@@ -70,7 +74,7 @@ fn enforce_stamp_domain<'dr, D: Driver<'dr, F = pasta::Fp>>(
     epoch: &Element<'dr, D>,
     bridge_hash: &[Element<'dr, D>; 2],
 ) -> ragu_core::Result<()> {
-    let [low, high] = *EMPTY_STAMP_BRIDGE_HASH;
+    let &[low, high] = EMPTY_STAMP_BRIDGE_HASH.as_ref();
     let low_element = Element::constant(dr, low);
     let high_element = Element::constant(dr, high);
     let equal_low = bridge_hash[0].is_equal(dr, &mut (), &low_element)?;
@@ -141,7 +145,7 @@ fn make_app() -> Result<Application<'static, Pasta, ProductionRank, HEADER_SIZE>
 
 lazy_static! {
     /// Fixed by the baked parameters and production rank, independently of PCD setup.
-    static ref EMPTY_STAMP_BRIDGE_HASH: [pasta::Fp; 2] = {
+    static ref EMPTY_STAMP_BRIDGE_HASH: TachygramSetBridgeHash = {
         #[expect(clippy::expect_used, reason = "the fixed setup has finite bridge generators")]
         empty_stamp_bridge_hash(pasta::baked()).expect("valid constant-one bridge hash")
     };
@@ -162,6 +166,7 @@ mod tests {
     use udon::field::Field as _;
 
     use super::*;
+    use crate::primitives::TachygramSetCommit;
 
     #[test]
     fn empty_stamp_bridge_hash_matches_application() {
@@ -171,16 +176,12 @@ mod tests {
         // Exercise synthesis without witness values before using the application.
         let mut counter = Emulator::counter();
         let epoch = Element::constant(&mut counter, pasta::Fp::ZERO);
-        let hash = prepared.map(|value| Element::constant(&mut counter, value));
+        let hash = prepared
+            .as_ref()
+            .map(|value| Element::constant(&mut counter, value));
         enforce_stamp_domain(&mut counter, &epoch, &hash).unwrap();
 
-        let commitment = PROOF_SYSTEM.commit(&[pasta::Fp::ONE]).unwrap();
-        let expected: [pasta::Fp; 2] = PROOF_SYSTEM
-            .bridge_hash(commitment)
-            .unwrap()
-            .coordinates()
-            .unwrap()
-            .into();
+        let expected = TachygramSetCommit::default().bridge().unwrap();
         assert_eq!(prepared, expected);
     }
 }
