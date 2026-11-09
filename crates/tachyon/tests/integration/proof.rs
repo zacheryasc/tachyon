@@ -1,7 +1,7 @@
 extern crate alloc;
 
-use alloc::{vec, vec::Vec};
-use core::{array, iter};
+use alloc::{string::ToString as _, vec, vec::Vec};
+use core::{array, assert_matches, iter};
 
 use ragu_circuits::polynomials::ProductionRank;
 use ragu_core::pasta::Pasta;
@@ -913,29 +913,25 @@ fn nullifier_derive_rejects_invalid_windows() {
             "{expected}",
         );
     }
-}
 
-#[test]
-#[should_panic(expected = "epoch index above EPOCH_MAX")]
-fn nullifier_derive_cannot_prove_a_window_past_the_epoch_range() {
-    let application = &*application();
-    let rng = &mut StdRng::seed_from_u64(0);
-    let user = WalletSim::new(shared_sk());
-    let secret = user.secret_pcd(application, rng, user.random_note(500));
     let past_the_end = EpochIndex::new(EPOCH_MAX - 3);
-    let mut witness = witness::nullifier_derive((*secret.data(), ()), EpochIndex::new(0));
-    witness.0 = past_the_end;
-    witness.1 = NfSeqPoly::new(past_the_end, &[]);
-
-    application
-        .fuse(
-            rng,
-            delegation::NullifierDerive,
-            witness,
-            secret,
-            application.bootstrap_proof().clone().carry::<()>(()),
-        )
-        .unwrap();
+    let mut past_the_end_witness =
+        witness::nullifier_derive((*secret.data(), ()), EpochIndex::new(0));
+    past_the_end_witness.0 = past_the_end;
+    past_the_end_witness.1 = NfSeqPoly::new(past_the_end, &[]);
+    assert_matches!(
+        application
+            .fuse(
+                rng,
+                delegation::NullifierDerive,
+                past_the_end_witness,
+                secret,
+                application.bootstrap_proof().clone().carry::<()>(()),
+            )
+            .err(),
+        Some(ragu_core::Error::InvalidWitness(err))
+            if err.to_string() == "epoch is above EPOCH_MAX"
+    );
 }
 
 #[test]
