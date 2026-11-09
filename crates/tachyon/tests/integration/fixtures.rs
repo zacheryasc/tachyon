@@ -379,6 +379,7 @@ impl PoolSimBlock {
 pub struct PoolSim {
     history: Vec<PoolSimBlock>,
     anchor_index: BTreeMap<Anchor, (BlockHeight, usize)>,
+    buckets: RefCell<BTreeMap<EpochIndex, QrBucketEntry>>,
 }
 
 impl PoolSim {
@@ -386,6 +387,7 @@ impl PoolSim {
         let mut pool = Self {
             history: Vec::new(),
             anchor_index: BTreeMap::new(),
+            buckets: RefCell::new(BTreeMap::new()),
         };
         pool.push_block(Anchor::default(), stamps);
         pool
@@ -541,6 +543,7 @@ pub(crate) struct QrIntakeEntry {
     pub members: Vec<Tachygram>,
 }
 
+#[derive(Clone)]
 pub(crate) struct QrBucketEntry {
     pub pcd: ragu_pcd::Pcd<Pasta, ProductionRank, qr::QrBucket>,
     pub members: Vec<Tachygram>,
@@ -980,6 +983,9 @@ pub(crate) fn epoch_bucket<RNG: CryptoRng>(
     application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
     rng: &mut RNG,
     pool: &PoolSim,
+    if let Some(bucket) = pool.buckets.borrow().get(&epoch) {
+        return bucket.clone();
+    }
     epoch: EpochIndex,
 ) -> QrBucketEntry {
     let entry = pool.block(epoch.first_block()).prev;
@@ -1004,7 +1010,9 @@ pub(crate) fn epoch_bucket<RNG: CryptoRng>(
         assert_eq!(roots.len(), 1);
         roots.pop().unwrap()
     };
-    seal_qr_intake(application, rng, intake, anchor_final_prev)
+    let bucket = seal_qr_intake(application, rng, intake, anchor_final_prev);
+    pool.buckets.borrow_mut().insert(epoch, bucket.clone());
+    bucket
 }
 
 pub(crate) fn small_epoch<RNG: CryptoRng>(rng: &mut RNG) -> (PoolSim, Anchor) {
