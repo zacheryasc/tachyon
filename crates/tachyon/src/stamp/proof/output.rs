@@ -17,11 +17,10 @@ use udon::curve::EndomorphismAffine;
 
 use crate::{
     Tachygram,
-    constants::MAX_MONEY,
     digest::poseidon,
     note::Note,
     pasta::{EpAffine, Fp, Fq},
-    relations::{arithmetic as circuit, curve},
+    relations::curve,
     value,
 };
 
@@ -74,6 +73,8 @@ impl Header<Fp> for OutputHeader {
 /// $\mathsf{cv} = \[-v\]\mathcal{V} + \[\mathsf{rcv}\]\mathcal{R}$.
 ///
 /// Two permutations (`cm`, `pad`) and two scalar multiplications (`cv`).
+/// Polynomial ledger: no semantic queries; both output slots use constant-one
+/// fillers.
 #[derive(Debug)]
 pub struct OutputBind;
 
@@ -115,7 +116,7 @@ impl Step<Pasta> for OutputBind {
                 .as_ref()
                 .map(|data| Fp::from(u64::from(data.0.value))),
         )?;
-        circuit::bounded::<D, 51>(dr, &amount, MAX_MONEY)?;
+        let amount_bits = curve::instep::amount_bits(dr, &amount)?;
         let rcm = Element::alloc(
             dr,
             &mut (),
@@ -135,9 +136,9 @@ impl Step<Pasta> for OutputBind {
         let pad = poseidon::with_driver::pad_tachygram(dr, &rcm, &pk, &amount, &psi)?;
         cm.clone().enforce_nonzero(dr)?;
         pad.clone().enforce_nonzero(dr)?;
-        let amount_bits = circuit::bits::<D, 51>(dr, &amount)?;
-        let rcv_bits = circuit::scalar_bits(dr, &witness.as_ref().map(|data| Fq::from(data.1)))?;
-        let cv = curve::commitment(dr, &amount_bits, &rcv_bits, true)?;
+        let rcv_bits =
+            curve::instep::free_bits(dr, &witness.as_ref().map(|data| Fq::from(data.1)))?;
+        let cv = curve::instep::commitment::<D, true>(dr, &amount_bits, &rcv_bits)?;
         let output = D::just(|| {
             (
                 Tachygram::from(*cm.value().take()),

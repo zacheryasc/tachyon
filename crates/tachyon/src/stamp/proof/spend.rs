@@ -17,7 +17,7 @@ use udon::{curve::EndomorphismAffine, field::Field as _};
 
 use super::{delegation::NoteSecret, spendable::NoteSpendable};
 use crate::{
-    constants::{EPOCH_MAX, MAX_MONEY},
+    constants::EPOCH_MAX,
     digest::poseidon,
     keys::PaymentKey,
     note,
@@ -119,6 +119,8 @@ impl Header<Fp> for SpendHeader {
 /// commitment's blinding scalar `rcv` is freely chosen.
 ///
 /// Two sponges run whether or not $e$ and $e + 1$ share a group.
+/// Polynomial ledger: no semantic queries; both output slots use constant-one
+/// fillers.
 #[derive(Debug)]
 pub struct SpendBind;
 
@@ -182,7 +184,7 @@ impl Step<Pasta> for SpendBind {
             ragu_core::Error::InvalidWitness("SpendBind: secret does not match note".into())
         })?;
         let value = right_encoded.as_gadget().value.clone();
-        circuit::bounded::<D, 51>(dr, &value, MAX_MONEY)?;
+        let value_bits = curve::instep::amount_bits(dr, &value)?;
         let epoch = left_encoded.as_gadget().epoch_current.clone();
         let one = Element::constant(dr, Fp::ONE);
         let next = epoch.add(dr, &one);
@@ -198,9 +200,9 @@ impl Step<Pasta> for SpendBind {
             ragu_core::Error::InvalidWitness("SpendBind: next-epoch nullifier is zero".into())
         })?;
 
-        let value_bits = circuit::bits::<D, 51>(dr, &value)?;
-        let rcv_bits = circuit::scalar_bits(dr, &witness.as_ref().map(|data| Fq::from(data.0)))?;
-        let cv = curve::commitment(dr, &value_bits, &rcv_bits, false)?;
+        let rcv_bits =
+            curve::instep::free_bits(dr, &witness.as_ref().map(|data| Fq::from(data.0)))?;
+        let cv = curve::instep::commitment::<D, false>(dr, &value_bits, &rcv_bits)?;
         let output = D::just(|| {
             let (spendable_cm, _, anchor) = left.take();
             let (_, note, _) = right.take();

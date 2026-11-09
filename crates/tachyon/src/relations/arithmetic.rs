@@ -11,11 +11,9 @@ use ragu_primitives::{
 };
 use udon::field::Field as _;
 
-use crate::{
-    constants::EPOCH_MAX,
-    pasta::{Fp, Fq},
-    primitives::EpochIndex,
-};
+#[cfg(test)]
+use super::super::pasta::Fq;
+use crate::{constants::EPOCH_MAX, pasta::Fp, primitives::EpochIndex};
 /// At 255 bits, the representation must also be below the field modulus;
 /// otherwise distinct bit strings could represent the same field element.
 #[expect(clippy::indexing_slicing, reason = "fixed field and bit widths")]
@@ -79,7 +77,7 @@ pub(crate) fn bounded<'dr, D: Driver<'dr, F = Fp>, const N: usize>(
 
 /// Blinding scalars live in Fq, not the circuit's Fp. Their bits are checked
 /// against the Fq modulus without converting the scalar to Fp.
-#[expect(clippy::indexing_slicing, reason = "fixed 255-bit scalar width")]
+#[cfg(test)]
 pub(crate) fn scalar_bits<'dr, D: Driver<'dr, F = Fp>>(
     dr: &mut D,
     scalar: &DriverValue<D, Fq>,

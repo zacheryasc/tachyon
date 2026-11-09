@@ -8,19 +8,16 @@ use ragu_core::{
     drivers::{Coeff, Driver},
     maybe::Maybe as _,
 };
-use ragu_primitives::{
-    Boolean, Element, GadgetExt as _, Point,
-    vec::{ConstLen, FixedVec},
-};
-use udon::{
-    curve::{Affine as _, Projective as _},
-    field::Field as _,
-};
+#[cfg(test)]
+use ragu_primitives::vec::{ConstLen, FixedVec};
+use ragu_primitives::{Boolean, Element, GadgetExt as _, Point};
+#[cfg(test)]
+use udon::curve::Projective as _;
+use udon::{curve::Affine as _, field::Field as _};
 
-use crate::{
-    pasta::{EpAffine, Fp},
-    value,
-};
+#[cfg(test)]
+use super::super::value;
+use crate::pasta::{EpAffine, Fp};
 
 // Only the complete arithmetic below uses an infinity flag. Header fields
 // and the exported results remain finite `Point`s.
@@ -111,6 +108,7 @@ pub(crate) fn add_complete<'dr, D: Driver<'dr, F = Fp>>(
     select(dr, &right.infinity, &left_corrected, left)
 }
 
+#[cfg(test)]
 pub(crate) fn scale_complete<'dr, D: Driver<'dr, F = Fp>, const N: usize>(
     dr: &mut D,
     base: &CompletePoint<'dr, D>,
@@ -149,6 +147,7 @@ pub(crate) fn finish<'dr, D: Driver<'dr, F = Fp>>(
     Ok(point)
 }
 
+#[cfg(test)]
 pub(crate) fn scale<'dr, D: Driver<'dr, F = Fp>, const N: usize>(
     dr: &mut D,
     base: &Point<'dr, D, EpAffine>,
@@ -159,6 +158,7 @@ pub(crate) fn scale<'dr, D: Driver<'dr, F = Fp>, const N: usize>(
     finish(dr, &computed)
 }
 
+#[cfg(test)]
 pub(crate) fn commitment<'dr, D: Driver<'dr, F = Fp>, const N: usize, const M: usize>(
     dr: &mut D,
     amount_bits: &FixedVec<Boolean<'dr, D>, ConstLen<N>>,
@@ -182,3 +182,5 @@ pub(crate) fn commitment<'dr, D: Driver<'dr, F = Fp>, const N: usize, const M: u
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) mod instep;

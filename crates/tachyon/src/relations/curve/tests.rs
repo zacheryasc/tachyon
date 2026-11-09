@@ -36,3 +36,21 @@ fn scalar_multiplication_accepts_scalars_above_the_circuit_field_modulus() {
     })
     .unwrap();
 }
+
+#[test]
+fn fixed_value_product_matches_bit_loop() {
+    Simulator::<Fp>::simulate(Fq::from(23), |dr, assignment| {
+        let amount = Element::constant(dr, Fp::from(17));
+        let amount_bits = instep::amount_bits(dr, &amount)?;
+        let blind_bits = scalar_bits(dr, &assignment)?;
+        let reference = commitment(dr, &amount_bits, &blind_bits, true)?;
+        let product = instep::walk(dr, &instep::NEG_V, &amount_bits)?;
+        let blind = Point::constant(dr, (*value::VALUE_COMMIT_R * Fq::from(23)).to_affine())?;
+        let complete_blind = from_point(dr, &blind)?;
+        let computed = add_complete(dr, &product, &complete_blind)?;
+        let result = finish(dr, &computed)?;
+        assert_eq!(result.value().take(), reference.value().take());
+        Ok(())
+    })
+    .unwrap();
+}

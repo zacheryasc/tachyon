@@ -23,15 +23,14 @@ use udon::{
 use super::{output::OutputHeader, pool::AnchorSpan, spend::SpendHeader};
 use crate::{
     ActionSetPoly, TachygramSetPoly,
-    constants::MAX_MONEY,
     digest::poseidon,
     entropy::ActionEntropy,
-    keys::{ProofAuthorizingKey, private, public::ACTION_AUTH_GENERATOR},
+    keys::{ProofAuthorizingKey, private},
     note::{self, Note},
     pasta::{EpAffine, Eq, Fp},
     primitives::{ActionDigest, Anchor, TachygramSetCommit, effect},
     relations::{
-        arithmetic as circuit, curve,
+        curve,
         enforce::{enforce_poly_equal, enforce_poly_product, enforce_poly_roots},
     },
     value,
@@ -172,6 +171,8 @@ impl Stamp {
 ///
 /// Two permutations (`alpha`, the action digest) and one scalar
 /// multiplication (`rk`); opens the action-set and tachygram-set polynomials.
+/// Polynomial ledger: O0 (singleton action), O1 (bound tachygram pair), once
+/// each.
 #[derive(Debug)]
 pub struct OutputAction;
 
@@ -244,9 +245,9 @@ impl Step<Pasta> for OutputAction {
         let pad_root = left_encoded.as_gadget().pad.clone();
         let theta = Element::alloc(dr, &mut (), witness.as_ref().map(|data| data.0.0))?;
         let alpha = poseidon::with_driver::alpha_output(dr, &theta, &cm_root)?;
-        let alpha_bits = circuit::bits::<D, 255>(dr, &alpha)?;
-        let generator = Point::constant(dr, *ACTION_AUTH_GENERATOR)?;
-        let rk = curve::scale(dr, &generator, &alpha_bits)?;
+        let alpha_bits = curve::instep::hash_bits(dr, &alpha)?;
+        let scaled = curve::instep::walk(dr, &curve::instep::G_TABLE, &alpha_bits)?;
+        let rk = curve::finish(dr, &scaled)?;
         let cv = left_encoded.as_gadget().cv.clone();
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
         let [rk_x, rk_y] = curve::coordinates(dr, &rk)?;
@@ -305,6 +306,8 @@ impl Step<Pasta> for OutputAction {
 /// Three permutations (`pk`, `alpha`, the action digest) and one scalar
 /// multiplication (`rk`); opens the action-set and tachygram-set
 /// polynomials.
+/// Polynomial ledger: O0 (singleton action), O1 (bound nullifier pair), once
+/// each.
 #[derive(Debug)]
 pub struct SpendAction;
 
@@ -394,11 +397,9 @@ impl Step<Pasta> for SpendAction {
         let cm = left_encoded.as_gadget().cm.clone();
         let theta = Element::alloc(dr, &mut (), witness.as_ref().map(|data| data.0.0))?;
         let alpha = poseidon::with_driver::alpha_spend(dr, &theta, &cm)?;
-        let alpha_bits = circuit::bits::<D, 255>(dr, &alpha)?;
-        let generator = Point::constant(dr, *ACTION_AUTH_GENERATOR)?;
+        let alpha_bits = curve::instep::hash_bits(dr, &alpha)?;
         let ak_complete = curve::from_point(dr, &ak)?;
-        let generator_complete = curve::from_point(dr, &generator)?;
-        let scaled = curve::scale_complete(dr, &generator_complete, &alpha_bits)?;
+        let scaled = curve::instep::walk(dr, &curve::instep::G_TABLE, &alpha_bits)?;
         let rk_complete = curve::add_complete(dr, &ak_complete, &scaled)?;
         let rk = curve::finish(dr, &rk_complete)?;
         let cv = left_encoded.as_gadget().cv.clone();
@@ -770,6 +771,7 @@ impl Step<Pasta> for ActionLift {
 ///
 /// Opens both input and output sets. The fee note and fee are fixed before
 /// the challenge.
+/// Polynomial ledger: L0/O0 (actions), L1/O1 (tachygrams), once each.
 #[derive(Debug)]
 pub struct FeeFuse;
 
@@ -839,22 +841,15 @@ impl Step<Pasta> for FeeFuse {
                 .as_ref()
                 .map(|data| Fp::from(u64::from(data.0.value))),
         )?;
-        circuit::bounded::<D, 51>(dr, &maximum, MAX_MONEY).map_err(|_err| {
-            ragu_core::Error::InvalidWitness("FeeFuse: maximum fee exceeds MAX_MONEY".into())
-        })?;
         let fee = Element::alloc(
             dr,
             &mut (),
             witness.as_ref().map(|data| Fp::from(u64::from(data.1))),
         )?;
-        circuit::bounded::<D, 51>(dr, &fee, MAX_MONEY)?;
-        // `maxfee` and `fee` are below 2^64, far below the field modulus, so the
-        // field difference lies in [0, MAX_MONEY] exactly when the integer
-        // difference does.
-        let change = maximum.sub(dr, &fee);
-        circuit::bounded::<D, 51>(dr, &change, MAX_MONEY).map_err(|_err| {
-            ragu_core::Error::InvalidWitness("FeeFuse: change is out of range".into())
-        })?;
+        // The three 51-bit slacks f, c and s sum identically to MAX_MONEY.
+        // Their integer sum is below p, excluding field wraparound and proving
+        // 0 <= fee <= maximum <= MAX_MONEY without three duplicated bounds.
+        let (change, slack_bits) = curve::instep::slacks(dr, &maximum, &fee)?;
         let pk = Element::alloc(
             dr,
             &mut (),
@@ -875,9 +870,11 @@ impl Step<Pasta> for FeeFuse {
         for (index, actual) in [&pk, &psi, &rcm, &maximum, &fee].into_iter().enumerate() {
             actual.enforce_equal(dr, &oracles.staged()[index])?;
         }
-        let maximum_bits = circuit::bits::<D, 51>(dr, &maximum)?;
-        let blind_bits = circuit::bits::<D, 255>(dr, &blind)?;
-        let cv = curve::commitment(dr, &maximum_bits, &blind_bits, true)?;
+        let blind_bits = curve::instep::hash_bits(dr, &blind)?;
+        let blind_point = curve::instep::walk(dr, &curve::instep::R_TABLE, &blind_bits)?;
+        let value_point = curve::instep::walk(dr, &curve::instep::FEE_V, &slack_bits)?;
+        let sum = curve::add_complete(dr, &blind_point, &value_point)?;
+        let cv = curve::finish(dr, &sum)?;
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
         let fee_digest = poseidon::with_driver::fee_digest(dr, (&cv_x, &cv_y), &fee)?;
         let fee_change = poseidon::with_driver::note_commitment(dr, &rcm, &pk, &change, &psi)?;
@@ -914,6 +911,7 @@ impl Step<Pasta> for FeeFuse {
 /// Proves a zero-action bundle's zero fee.
 ///
 /// Opens both singleton sets. The fee note is fixed before the challenge.
+/// Polynomial ledger: O0 (fee digest), O1 (fee change commitment), once each.
 #[derive(Debug)]
 pub struct FeeSeed;
 
@@ -1006,9 +1004,9 @@ impl Step<Pasta> for FeeSeed {
         for (index, actual) in [&pk, &psi, &rcm].into_iter().enumerate() {
             actual.enforce_equal(dr, &oracles.staged()[index])?;
         }
-        let blind_bits = circuit::bits::<D, 255>(dr, &blind)?;
-        let blind_generator = Point::constant(dr, value::VALUE_COMMIT_R.to_affine())?;
-        let cv = curve::scale(dr, &blind_generator, &blind_bits)?;
+        let blind_bits = curve::instep::hash_bits(dr, &blind)?;
+        let scaled = curve::instep::walk(dr, &curve::instep::R_TABLE, &blind_bits)?;
+        let cv = curve::finish(dr, &scaled)?;
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
         let zero = Element::constant(dr, Fp::ZERO);
         let fee_digest = poseidon::with_driver::fee_digest(dr, (&cv_x, &cv_y), &zero)?;
