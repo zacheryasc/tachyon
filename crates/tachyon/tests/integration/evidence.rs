@@ -1,4 +1,4 @@
-use core::{assert_matches, iter};
+use core::iter;
 
 use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
 use udon::field::Field as _;
@@ -200,21 +200,22 @@ fn evidence_tree_joins_reject_mismatched_trees() {
         value,
         final0,
     );
-    assert_matches!(
-        application
-            .fuse(
-                rng,
-                evidence::EvidenceTreeLeafPair,
-                (),
-                bucket0.pcd.clone(),
-                bucket1.pcd.clone(),
-            )
-            .err(),
-        Some(ragu_core::Error::InvalidWitness(err))
-            if err.to_string() == "EvidenceTreeLeafPair: inputs cover different epochs"
+    let (forged, ()) = application
+        .fuse(
+            rng,
+            evidence::EvidenceTreeLeafPair,
+            (),
+            bucket0.pcd.clone(),
+            bucket1.pcd.clone(),
+        )
+        .unwrap();
+    assert!(
+        !application.verify_uncompressed(&forged, &mut *rng).unwrap(),
+        "EvidenceTreeLeafPair: inputs cover different epochs"
     );
     let tree0 = build_evidence_tree(application, rng, vec![bucket0]).pcd;
     let tree1 = build_evidence_tree(application, rng, vec![bucket1]).pcd;
+    assert!(application.verify_uncompressed(&tree0, &mut *rng).unwrap());
 
     let other_discriminant = QrDiscriminant::random(rng);
     let foreign = qr_bucket_at(
@@ -308,19 +309,28 @@ fn evidence_tree_joins_reject_mismatched_trees() {
             )
             .unwrap()
             .0;
-        assert_matches!(
+        assert!(
             application
-                .fuse(rng, evidence::EvidenceTreePairFuse, (), left, right)
-                .err(),
-            Some(ragu_core::Error::InvalidWitness(err))
-                if err.to_string() == format!("EvidenceTreePairFuse: {complaint}")
+                .verify_uncompressed(&left_pair, &mut *rng)
+                .unwrap()
         );
-        assert_matches!(
-            application
-                .fuse(rng, evidence::EvidenceTreeFuse, (), left_pair, right_pair)
-                .err(),
-            Some(ragu_core::Error::InvalidWitness(err))
-                if err.to_string() == format!("EvidenceTreeFuse: {complaint}")
+        let (forged_pair, ()) = application
+            .fuse(rng, evidence::EvidenceTreePairFuse, (), left, right)
+            .unwrap();
+        assert!(
+            !application
+                .verify_uncompressed(&forged_pair, &mut *rng)
+                .unwrap(),
+            "EvidenceTreePairFuse: {complaint}"
+        );
+        let (forged_tree, ()) = application
+            .fuse(rng, evidence::EvidenceTreeFuse, (), left_pair, right_pair)
+            .unwrap();
+        assert!(
+            !application
+                .verify_uncompressed(&forged_tree, &mut *rng)
+                .unwrap(),
+            "EvidenceTreeFuse: {complaint}"
         );
     }
 }
@@ -354,18 +364,20 @@ fn evidence_tree_descend_and_open_reject_forgeries() {
     let (_sides, ref mut children) = path[0];
     children[EVIDENCE_TREE_ARITY - 1] =
         EvidenceTreeRoot(Fp::from(children[EVIDENCE_TREE_ARITY - 1]) + Fp::ONE);
-    assert_matches!(
-        application
-            .fuse(
-                rng,
-                evidence::EvidenceTreeDescend,
-                witness::evidence_tree_descend((*tree.pcd.data(), ()), path),
-                tree.pcd.clone(),
-                application.bootstrap_proof().clone().carry::<()>(()),
-            )
-            .err(),
-        Some(ragu_core::Error::InvalidWitness(err))
-            if err.to_string() == "EvidenceTreeDescend: children do not hash to the node"
+    let (forged_descent, ()) = application
+        .fuse(
+            rng,
+            evidence::EvidenceTreeDescend,
+            witness::evidence_tree_descend((*tree.pcd.data(), ()), path),
+            tree.pcd.clone(),
+            application.bootstrap_proof().clone().carry::<()>(()),
+        )
+        .unwrap();
+    assert!(
+        !application
+            .verify_uncompressed(&forged_descent, &mut *rng)
+            .unwrap(),
+        "EvidenceTreeDescend: children do not hash to the node"
     );
 
     let mut node = tree.pcd.clone();
@@ -407,18 +419,20 @@ fn evidence_tree_descend_and_open_reject_forgeries() {
     ]
     .into_boxed_slice()
     {
-        assert_matches!(
-            application
-                .fuse(
-                    rng,
-                    evidence::EvidenceTreeOpen,
-                    witness::evidence_tree_open((*opened.data(), ()), profile, contents),
-                    opened,
-                    application.bootstrap_proof().clone().carry::<()>(()),
-                )
-                .err(),
-            Some(ragu_core::Error::InvalidWitness(err))
-                if err.to_string() == "EvidenceTreeOpen: witnessed bucket is not the tree's leaf"
+        let (forged_open, ()) = application
+            .fuse(
+                rng,
+                evidence::EvidenceTreeOpen,
+                witness::evidence_tree_open((*opened.data(), ()), profile, contents),
+                opened,
+                application.bootstrap_proof().clone().carry::<()>(()),
+            )
+            .unwrap();
+        assert!(
+            !application
+                .verify_uncompressed(&forged_open, &mut *rng)
+                .unwrap(),
+            "EvidenceTreeOpen: witnessed bucket is not the tree's leaf"
         );
     }
 
@@ -431,20 +445,21 @@ fn evidence_tree_descend_and_open_reject_forgeries() {
         ([honest, substituted.clone()], false),
         ([substituted.clone(), substituted], false),
     ] {
+        let (opened, ()) = application
+            .fuse(
+                rng,
+                WithPolynomials(evidence::EvidenceTreeOpen, polynomials),
+                witness::evidence_tree_open(
+                    (*node.data(), ()),
+                    leaf.profile,
+                    leaf.contents.clone(),
+                ),
+                node.clone(),
+                application.bootstrap_proof().clone().carry::<()>(()),
+            )
+            .unwrap();
         assert_eq!(
-            application
-                .fuse(
-                    rng,
-                    WithPolynomials(evidence::EvidenceTreeOpen, polynomials),
-                    witness::evidence_tree_open(
-                        (*node.data(), ()),
-                        leaf.profile,
-                        leaf.contents.clone()
-                    ),
-                    node.clone(),
-                    application.bootstrap_proof().clone().carry::<()>(()),
-                )
-                .is_ok(),
+            application.verify_uncompressed(&opened, &mut *rng).unwrap(),
             accepted,
         );
     }

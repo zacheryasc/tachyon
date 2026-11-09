@@ -1,7 +1,4 @@
-extern crate alloc;
-
-use alloc::string::ToString as _;
-use core::{array, assert_matches};
+use core::array;
 
 use rand::{SeedableRng as _, rngs::StdRng};
 use udon::curve::Projective as _;
@@ -106,14 +103,15 @@ fn summary_seed_rejects_empty_stamp() {
     let rng = &mut StdRng::seed_from_u64(0);
     let start = Anchor::random(rng);
 
-    assert_matches!(
-        application
-            .seed(
-                rng,
-                summary::SummarySeed,
-                witness::summary_seed(((), ()), start, EpochIndex::new(3), &[]),
-            )
-            .err(),
-        Some(ragu_core::Error::InvalidWitness(err)) if err.to_string() == "invalid anchor step"
+    let (forged, ()) = application
+        .seed(
+            rng,
+            summary::SummarySeed,
+            witness::summary_seed(((), ()), start, EpochIndex::new(3), &[]),
+        )
+        .unwrap();
+    assert!(
+        !application.verify_uncompressed(&forged, rng).unwrap(),
+        "invalid anchor step"
     );
 }

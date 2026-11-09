@@ -224,10 +224,17 @@ fn plan_prove_lifts_a_spend_along_spans() {
         build_lift_span(application, rng, &pool, cm_height..=cm_height),
         build_lift_span(application, rng, &pool, plan_height..=plan_height),
     ];
-    assert_matches!(
-        plan.prove(application, rng, &user.pak, vec![(secret, spendable, gapped)]),
-        Err(ProveError::ProofFailed(ragu_core::Error::InvalidWitness(err))) if err.to_string()
-            == "ActionLift: actions anchor is neither the span's start nor a member"
+    let forged = plan
+        .prove(
+            application,
+            rng,
+            &user.pak,
+            vec![(secret, spendable, gapped)],
+        )
+        .unwrap();
+    assert!(
+        !forged.verify_proof(application, rng, digests).unwrap(),
+        "ActionLift: actions anchor is neither the span's start nor a member"
     );
 }
 
@@ -301,14 +308,31 @@ fn overlapping_stamps_cannot_aggregate() {
             "StampMerge: merged action set must be the product of left and right action sets",
         ),
     ] {
-        assert_matches!(
-            left.clone().merge(application,
+        let descriptors: Vec<action::Descriptor> = left_descriptors
+            .iter()
+            .chain(&right_descriptors)
+            .copied()
+            .collect();
+        let fees: Vec<fee::Descriptor> = left_fees.iter().chain(&right_fees).copied().collect();
+        let digests: Vec<ActionDigest> = descriptors
+            .iter()
+            .map(|desc| desc.digest().unwrap())
+            .chain(fees.iter().map(|descriptor| descriptor.digest().unwrap()))
+            .collect();
+
+        let merged = left
+            .clone()
+            .merge(
+                application,
                 rng,
                 (left_descriptors.clone(), left_fees.clone()),
                 (right.clone(), right_descriptors.clone(), right_fees.clone()),
-            ),
-            Err(ProveError::ProofFailed(ragu_core::Error::InvalidWitness(err)))
-                if err.to_string() == expected
+            )
+            .unwrap();
+        let union: BTreeSet<ActionDigest> = digests.iter().copied().collect();
+        assert!(
+            !merged.verify_proof(application, rng, union).unwrap(),
+            "{expected}"
         );
 
         let forged = forge_overlapping_merge(
@@ -325,12 +349,6 @@ fn overlapping_stamps_cannot_aggregate() {
                 &right_fees.iter().copied().collect::<Vec<_>>(),
             ),
         );
-        let descriptors: Vec<action::Descriptor> = left_descriptors
-            .iter()
-            .chain(&right_descriptors)
-            .copied()
-            .collect();
-        let fees: Vec<fee::Descriptor> = left_fees.iter().chain(&right_fees).copied().collect();
         let tachygrams: BTreeSet<Tachygram> =
             left.tachygrams.union(&right.tachygrams).copied().collect();
         let stamp = ProofStamp {
@@ -345,11 +363,6 @@ fn overlapping_stamps_cannot_aggregate() {
             proof: Box::new(forged.proof().clone()),
             fee: left.fee,
         };
-        let digests: Vec<ActionDigest> = descriptors
-            .iter()
-            .map(|desc| desc.digest().unwrap())
-            .chain(fees.iter().map(|descriptor| descriptor.digest().unwrap()))
-            .collect();
         assert!(!stamp.verify_proof(application, rng, digests).unwrap());
     }
 }
@@ -595,14 +608,24 @@ fn merge_after_lift() {
     );
     let (fee_set_a, fee_set_b) = (BTreeSet::from([fee_a]), BTreeSet::from([fee_b]));
 
-    assert_matches!(
-        stamp_a.clone().merge(application,
+    let digests = [
+        plan_a.digest().unwrap(),
+        plan_b.digest().unwrap(),
+        fee_a.digest().unwrap(),
+        fee_b.digest().unwrap(),
+    ];
+    let unlifted = stamp_a
+        .clone()
+        .merge(
+            application,
             rng,
             (desc_a.clone(), fee_set_a.clone()),
             (stamp_b.clone(), desc_b.clone(), fee_set_b.clone()),
-        ),
-        Err(ProveError::ProofFailed(ragu_core::Error::InvalidWitness(err)))
-            if err.to_string() == "StampMerge: anchors must match"
+        )
+        .unwrap();
+    assert!(
+        !unlifted.verify_proof(application, rng, digests).unwrap(),
+        "StampMerge: anchors must match"
     );
 
     let span = build_lift_span(application, rng, &pool, height_a.next().unwrap()..=height_b);
@@ -611,7 +634,7 @@ fn merge_after_lift() {
         .unwrap();
 
     assert_eq!(lifted_a.anchor, stamp_b.anchor);
-    lifted_a
+    let merged = lifted_a
         .merge(
             application,
             rng,
@@ -619,6 +642,7 @@ fn merge_after_lift() {
             (stamp_b, desc_b, fee_set_b),
         )
         .unwrap();
+    assert!(merged.verify_proof(application, rng, digests).unwrap());
 }
 
 #[test]
@@ -660,8 +684,10 @@ fn mismatched_merge_descriptors_fail_verification() {
         )
         .collect();
 
-    assert_matches!(
-        bundle_a.stamp.clone().merge(
+    let mismatched = bundle_a
+        .stamp
+        .clone()
+        .merge(
             application,
             rng,
             (descriptors_a.clone(), fees_a.clone()),
@@ -670,8 +696,24 @@ fn mismatched_merge_descriptors_fail_verification() {
                 BTreeSet::from([foreign]),
                 fees_b.clone(),
             ),
-        ),
-        Err(ProveError::ProofFailed(ragu_core::Error::InvalidWitness(_)))
+        )
+        .unwrap();
+    let mismatched_digests: Vec<ActionDigest> = descriptors_a
+        .iter()
+        .chain([&foreign])
+        .map(|desc| desc.digest().unwrap())
+        .chain(
+            fees_a
+                .iter()
+                .chain(&fees_b)
+                .copied()
+                .map(|descriptor| descriptor.digest().unwrap()),
+        )
+        .collect();
+    assert!(
+        !mismatched
+            .verify_proof(application, rng, mismatched_digests)
+            .unwrap()
     );
 
     let honest = bundle_a
