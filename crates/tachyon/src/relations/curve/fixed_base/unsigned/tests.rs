@@ -45,6 +45,24 @@ fn raw_bits(value: Fq) -> [bool; 255] {
     array::from_fn(|index| value.to_le_bits().as_ref()[index])
 }
 
+/// Bits whose interior prefix equals the top entry: the low digits read
+/// $k_{W-1} 8^{W-1} - 4 (8^{W-1} - 1) / 7 \bmod q$.
+fn doubling_bits<const N: usize>(top: u8) -> [bool; N] {
+    let low_width = N - 3;
+    let power = (0..low_width).fold(Fq::ONE, |power, _| power.double());
+    let low = Fq::from(u64::from(top)) * power
+        - Fq::from(4) * (power - Fq::ONE) * Fq::from(7).invert().unwrap();
+    let low_bits = raw_bits(low);
+    assert!(!low_bits[low_width..].contains(&true));
+    array::from_fn(|index| {
+        if index < low_width {
+            low_bits[index]
+        } else {
+            top & (1 << (index - low_width)) != 0
+        }
+    })
+}
+
 #[test]
 fn walk_counts() {
     let wide = table::<85>(*value::VALUE_COMMIT_R, Ep::identity());
@@ -124,6 +142,21 @@ fn top_addition_inverse_and_doubling() {
         let correction = base * Fq::from(coefficient);
         check_walk(&table::<2>(base, correction), base, correction, [false; 6]);
     }
+
+    for top in [1, 5] {
+        let bits = doubling_bits::<255>(top);
+        check_walk(&R_TABLE, *value::VALUE_COMMIT_R, Ep::identity(), bits);
+        let generator = ACTION_AUTH_GENERATOR.to_projective();
+        check_walk(&G_TABLE, generator, Ep::identity(), bits);
+    }
+    let value_base = *value::VALUE_COMMIT_V;
+    check_walk(&V_TABLE, value_base, Ep::identity(), doubling_bits::<51>(1));
+    check_walk(
+        &NEG_V_TABLE,
+        -value_base,
+        Ep::identity(),
+        doubling_bits::<51>(1),
+    );
 }
 
 #[test]
