@@ -44,17 +44,16 @@ fn evidence_tree_admission_rejects_substituted_contents() {
         [honest, substituted.clone()],
         [substituted.clone(), substituted],
     ] {
-        assert!(
-            application
-                .fuse(
-                    rng,
-                    WithPolynomials(qr::QrBucketSeal, polynomials),
-                    witness::qr_bucket_seal((*intake_pcd.data(), ()), Anchor::from(Fp::ZERO)),
-                    intake_pcd.clone(),
-                    application.bootstrap_proof().clone().carry::<()>(()),
-                )
-                .is_err()
-        );
+        let (forged, ()) = application
+            .fuse(
+                rng,
+                WithPolynomials(qr::QrBucketSeal, polynomials),
+                witness::qr_bucket_seal((*intake_pcd.data(), ()), Anchor::from(Fp::ZERO)),
+                intake_pcd.clone(),
+                application.bootstrap_proof().clone().carry::<()>(()),
+            )
+            .unwrap();
+        assert!(!application.verify_uncompressed(&forged, &mut *rng).unwrap());
     }
     let replacement: TachygramSetPoly = iter::once(Tachygram::random(rng)).collect();
     let mut forged_header = *bucket.pcd.data();
@@ -64,12 +63,13 @@ fn evidence_tree_admission_rejects_substituted_contents() {
         .proof()
         .clone()
         .carry::<qr::QrBucket>(forged_header);
-    for (left, right) in [(forged.clone(), bucket.pcd.clone()), (bucket.pcd, forged)] {
-        assert_matches!(
-            application.fuse(rng, evidence::EvidenceTreeLeafPair, (), left, right).err(),
-            Some(ragu_core::Error::InvalidWitness(err))
-                if err.to_string() == "child proof or carried header is not accepted by this application"
-        );
+    for (left, right) in
+        vec![(forged.clone(), bucket.pcd.clone()), (bucket.pcd, forged)].into_boxed_slice()
+    {
+        let (parent, ()) = application
+            .fuse(rng, evidence::EvidenceTreeLeafPair, (), left, right)
+            .unwrap();
+        assert!(!application.verify_uncompressed(&parent, &mut *rng).unwrap());
     }
 }
 
@@ -250,7 +250,7 @@ fn evidence_tree_joins_reject_mismatched_trees() {
         fake_anchor_final_prev,
     );
 
-    for (left, right, complaint) in [
+    for (left, right, complaint) in vec![
         (
             tree0.clone(),
             tree1.clone(),
@@ -271,7 +271,9 @@ fn evidence_tree_joins_reject_mismatched_trees() {
             build_evidence_tree(application, rng, vec![elsewhere]).pcd,
             "inputs open at different anchors",
         ),
-    ] {
+    ]
+    .into_boxed_slice()
+    {
         let left_pair = application
             .fuse(
                 rng,
@@ -369,7 +371,7 @@ fn evidence_tree_descend_and_open_reject_forgeries() {
             .0;
     }
     let QrProfile { depth, bits } = leaf.profile;
-    for (opened, profile, contents) in [
+    for (opened, profile, contents) in vec![
         (tree.pcd, leaf.profile, leaf.contents.clone()),
         (
             node.clone(),
@@ -388,7 +390,9 @@ fn evidence_tree_descend_and_open_reject_forgeries() {
             leaf.contents.clone(),
         ),
         (node.clone(), leaf.profile, other_contents),
-    ] {
+    ]
+    .into_boxed_slice()
+    {
         assert_matches!(
             application
                 .fuse(

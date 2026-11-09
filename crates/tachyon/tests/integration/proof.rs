@@ -294,7 +294,7 @@ fn anchor_span_fuse_rejects_invalid_compositions() {
             &TachygramSetPoly::from_iter([Tachygram::random(rng)]).commit(),
         )
         .unwrap();
-    for (fuse_witness, (first, second), expected) in [
+    for (fuse_witness, (first, second), expected) in vec![
         (
             witness::anchor_span_fuse((*left.data(), *right.data()), &left_members, &[]),
             (left.clone(), right.clone()),
@@ -318,7 +318,9 @@ fn anchor_span_fuse_rejects_invalid_compositions() {
             (right, left),
             "AnchorSpanFuse: spans do not share a vertex",
         ),
-    ] {
+    ]
+    .into_boxed_slice()
+    {
         assert_matches!(
             application
                 .fuse(rng, pool::AnchorSpanFuse, fuse_witness, first, second)
@@ -664,7 +666,7 @@ fn unspent_bind_rejects_mismatched_sequences() {
         &elapsed,
     );
 
-    for (bind_range, bind_witness, expected) in [
+    for (bind_range, bind_witness, expected) in vec![
         (
             range.clone(),
             witness::unspent_bind(
@@ -707,7 +709,9 @@ fn unspent_bind_rejects_mismatched_sequences() {
             },
             "UnspentBind: sequence does not match the derivation",
         ),
-    ] {
+    ]
+    .into_boxed_slice()
+    {
         assert_matches!(
             application
                 .fuse(
@@ -1112,19 +1116,16 @@ fn nullifier_fuse_concatenates_adjacent_windows() {
         iter::repeat_with(|| Nullifier::from(Fp::random(|bytes| rng.fill_bytes(bytes))))
             .take(32)
             .collect();
-    assert_matches!(
-        application
-            .fuse(
-                rng,
-                delegation::NullifierFuse,
-                witness::nullifier_fuse((*left.data(), *right.data()), &wrong_members, &[]),
-                left.clone(),
-                right.clone(),
-            )
-            .err(),
-        Some(ragu_core::Error::InvalidWitness(err))
-            if err.to_string() == "NullifierFuse: merged is not the concat of the halves"
-    );
+    let (forged, ()) = application
+        .fuse(
+            rng,
+            delegation::NullifierFuse,
+            witness::nullifier_fuse((*left.data(), *right.data()), &wrong_members, &[]),
+            left.clone(),
+            right.clone(),
+        )
+        .unwrap();
+    assert!(!application.verify_uncompressed(&forged, &mut *rng).unwrap());
 
     let (merged, ()) = application
         .fuse(rng, delegation::NullifierFuse, merged_witness, left, right)
@@ -1137,6 +1138,7 @@ fn nullifier_fuse_concatenates_adjacent_windows() {
         merged.commitments()[0],
         Eq::from(NfSeqPoly::new(EpochIndex::new(0), &members).commit()).to_affine()
     );
+    assert!(application.verify_uncompressed(&merged, rng).unwrap());
 }
 
 #[test]

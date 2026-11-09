@@ -376,6 +376,7 @@ fn qr_side_descend_carries_each_side_one_level_down() {
                 )
                 .to_affine()
             );
+            assert!(application.verify_uncompressed(&child, &mut *rng).unwrap());
         }
     }
 }
@@ -1321,7 +1322,7 @@ fn qr_spendable_init_rejects_a_bucket_that_does_not_match_the_segment() {
         fake_anchor_final_prev,
     );
 
-    for (unspent, bucket, expected) in [
+    for (unspent, bucket, expected) in vec![
         (
             unspent0.clone(),
             qr_bucket_at(
@@ -1347,7 +1348,9 @@ fn qr_spendable_init_rejects_a_bucket_that_does_not_match_the_segment() {
             elsewhere,
             "QrSpendableInit: segment does not open where the bucket does",
         ),
-    ] {
+    ]
+    .into_boxed_slice()
+    {
         assert_matches!(
             application
                 .fuse(
@@ -1423,7 +1426,7 @@ fn qr_unspent_init_rejects_corrupted_inputs() {
     let (epoch, ..) = *bucket.pcd.data();
     let witness = witness::qr_unspent_init((*bucket.pcd.data(), ()), nf.into());
 
-    for (bucket_pcd, init_witness, expected) in [
+    for (bucket_pcd, init_witness, expected) in vec![
         (
             bucket.pcd.clone(),
             {
@@ -1494,7 +1497,9 @@ fn qr_unspent_init_rejects_corrupted_inputs() {
             ),
             "QR profile: value does not take the bucket's profile",
         ),
-    ] {
+    ]
+    .into_boxed_slice()
+    {
         assert_matches!(
             application
                 .fuse(
