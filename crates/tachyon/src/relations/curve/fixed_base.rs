@@ -137,8 +137,11 @@ fn slope<'dr, D: Driver<'dr, F = Fp>>(
 /// excluding both equality and inverses. The top addition is always complete.
 #[expect(
     clippy::indexing_slicing,
-    clippy::expect_used,
-    reason = "keep single-use selection and addition formulas beside their fixed-window preconditions"
+    reason = "const assertions fix the bit count; table() constructs exactly W low windows"
+)]
+#[expect(
+    clippy::missing_asserts_for_indexing,
+    reason = "const assertions enforce N == 2 * W + 3 and W > 0"
 )]
 pub(crate) fn walk<'dr, D: Driver<'dr, F = Fp>, const W: usize, const N: usize>(
     dr: &mut D,
@@ -152,20 +155,12 @@ pub(crate) fn walk<'dr, D: Driver<'dr, F = Fp>, const W: usize, const N: usize>(
             "the bit width must match the fixed-base table"
         );
     }
-    let bit = |index| bits.get(index).expect("compile-time walk bit count");
-    let first = table
-        .low
-        .first()
-        .expect("a walk has at least one low window");
-    let mut accumulator = select_low(dr, first, [bit(0), bit(1)])?;
+    let mut accumulator = select_low(dr, &table.low[0], [&bits[0], &bits[1]])?;
     for window in 1..W {
         let digit = select_low(
             dr,
-            table
-                .low
-                .get(window)
-                .expect("table has exactly W low windows"),
-            [bit(2 * window), bit(2 * window + 1)],
+            &table.low[window],
+            [&bits[2 * window], &bits[2 * window + 1]],
         )?;
         // Three-gate incomplete addition. The offset theorem above excludes
         // a zero denominator for every satisfying Boolean assignment.
@@ -179,9 +174,9 @@ pub(crate) fn walk<'dr, D: Driver<'dr, F = Fp>, const W: usize, const N: usize>(
     }
 
     // Shared monomials select the top three-bit digit in four gates.
-    let low = bit(2 * W).element();
-    let middle = bit(2 * W + 1).element();
-    let high = bit(2 * W + 2).element();
+    let low = bits[2 * W].element();
+    let middle = bits[2 * W + 1].element();
+    let high = bits[2 * W + 2].element();
     let low_middle = low.mul(dr, &middle)?;
     let low_high = low.mul(dr, &high)?;
     let middle_high = middle.mul(dr, &high)?;
