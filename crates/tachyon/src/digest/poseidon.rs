@@ -24,7 +24,7 @@ use ragu_primitives::{
 };
 use udon::field::Field as _;
 
-use crate::{constants::EVIDENCE_TREE_ARITY, pasta, pasta::Fp, primitives::TachygramSetBridgeHash};
+use crate::{constants::EVIDENCE_TREE_ARITY, pasta, pasta::Fp};
 
 #[expect(
     clippy::expect_used,
@@ -251,31 +251,16 @@ pub fn nullifier_group(mk: Fp, epoch_start: Fp) -> [Fp; PoseidonFp::RATE] {
 const ANCHOR_STAMP_DOMAIN: &[u8; 16] = b"Tachyon-AnchorSt";
 
 /// Advances the anchor with the stamp's epoch and tachygram-set bridge hash.
-///
-/// # Errors
-///
-/// Fails for the empty set's bridge hash.
-pub fn anchor_next_stamp(
-    anchor_prev: Fp,
-    epoch: Fp,
-    stamp_hash: TachygramSetBridgeHash,
-    empty_hash: TachygramSetBridgeHash,
-) -> Result<Fp> {
-    if stamp_hash == empty_hash {
-        return Err(ragu_core::Error::InvalidWitness(
-            "invalid anchor step".into(),
-        ));
-    }
-    Ok(*emulate(|driver| {
+#[must_use]
+pub fn anchor_next_stamp(anchor_prev: Fp, epoch: Fp, stamp_hash: [Fp; 2]) -> Fp {
+    *emulate(|driver| {
         let anchor_element = Element::constant(driver, anchor_prev);
         let epoch_element = Element::constant(driver, epoch);
-        let bridge_hash = stamp_hash
-            .as_ref()
-            .map(|value| Element::constant(driver, value));
+        let bridge_hash = stamp_hash.map(|value| Element::constant(driver, value));
         with_driver::anchor_next_stamp(driver, &anchor_element, &epoch_element, &bridge_hash)
     })
     .value()
-    .take())
+    .take()
 }
 
 const QR_BUCKET_DOMAIN: &[u8; 16] = b"Tachyon-QrBucket";
@@ -290,7 +275,7 @@ pub fn evidence_tree_leaf(
     discriminant: Fp,
     depth: Fp,
     bits: Fp,
-    contents: TachygramSetBridgeHash,
+    contents: [Fp; 2],
 ) -> Fp {
     *emulate(|driver| {
         let epoch_element = Element::constant(driver, epoch);
@@ -299,9 +284,7 @@ pub fn evidence_tree_leaf(
         let discriminant_element = Element::constant(driver, discriminant);
         let depth_element = Element::constant(driver, depth);
         let bits_element = Element::constant(driver, bits);
-        let bridge_hash = contents
-            .as_ref()
-            .map(|value| Element::constant(driver, value));
+        let bridge_hash = contents.map(|value| Element::constant(driver, value));
         with_driver::evidence_tree_leaf(
             driver,
             &epoch_element,

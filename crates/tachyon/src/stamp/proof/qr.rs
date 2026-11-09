@@ -49,7 +49,7 @@ use crate::{
     pasta::Fp,
     primitives::{
         Anchor, EpochIndex, NfSeqPoly, QrClassRoot, QrDiscriminant, QrInterpolantPoly, QrProfile,
-        QrQuotientPoly, Tachygram, TachygramSetBridgeHash, TachygramSetPoly,
+        QrQuotientPoly, Tachygram, TachygramSetBridge, TachygramSetPoly,
     },
     relations::{
         arithmetic as circuit,
@@ -154,7 +154,7 @@ impl Header<Fp> for QrIntakeSides {
         Anchor,
         QrDiscriminant,
         QrProfile,
-        TachygramSetBridgeHash,
+        TachygramSetBridge,
     );
     type Output = Kind![Fp; QrIntakeSidesOutput<'_, _>];
 
@@ -1051,7 +1051,7 @@ impl Header<Fp> for QrBucket {
         Anchor,
         QrDiscriminant,
         QrProfile,
-        TachygramSetBridgeHash,
+        TachygramSetBridge,
     );
     type Output = Kind![Fp; QrBucketOutput<'_, _>];
 

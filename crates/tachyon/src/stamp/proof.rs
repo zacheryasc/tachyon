@@ -35,13 +35,13 @@ use ragu_primitives::{ENDOSCALAR_BITS, ENDOSCALAR_PRODUCTS, Element};
 use udon::curve::{Affine, Projective as _};
 
 use crate::{
-    constants::EPOCH_MAX, pasta, primitives::TachygramSetBridgeHash, relations::arithmetic::bounded,
+    constants::EPOCH_MAX, pasta, primitives::TachygramSetBridge, relations::arithmetic::bounded,
 };
 
 /// Prepares the constant-one commitment's bridge hash without an application.
 fn empty_stamp_bridge_hash(
     params: &<Pasta as Cycle>::Params,
-) -> ragu_core::Result<TachygramSetBridgeHash> {
+) -> ragu_core::Result<TachygramSetBridge> {
     let (x, y) = Pasta::host_generators(params)
         .g()
         .first()
@@ -145,7 +145,7 @@ fn make_app() -> Result<Application<'static, Pasta, ProductionRank, HEADER_SIZE>
 
 lazy_static! {
     /// Fixed by the baked parameters and production rank, independently of PCD setup.
-    static ref EMPTY_STAMP_BRIDGE_HASH: TachygramSetBridgeHash = {
+    static ref EMPTY_STAMP_BRIDGE_HASH: TachygramSetBridge = {
         #[expect(clippy::expect_used, reason = "the fixed setup has finite bridge generators")]
         empty_stamp_bridge_hash(pasta::baked()).expect("valid constant-one bridge hash")
     };
