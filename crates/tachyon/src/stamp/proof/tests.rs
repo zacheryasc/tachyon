@@ -1,6 +1,7 @@
 use core::assert_matches;
 
-use ragu_core::{Error, drivers::emulator::Emulator};
+use ragu_core::{Error, drivers::emulator::Emulator, pasta::Pasta};
+use ragu_pcd::profile::{Profile, ProfiledCycle};
 use ragu_primitives::Element;
 use udon::{
     curve::{Affine as _, Projective as _},
@@ -12,6 +13,18 @@ use super::{
     EMPTY_STAMP_BRIDGE_HASH, TachygramSetCommit, enforce_stamp_domain, new_application,
     pasta::{Eq, Fp},
 };
+
+#[test]
+fn application_profile_excludes_decompression() {
+    // Ragu registers Decompress exactly when this statement circuit exists.
+    // Its constant-one output slots do not preserve our non-membership checks.
+    assert!(
+        <<Pasta as ProfiledCycle>::Profile as Profile>::native_extension()
+            .statement
+            .is_none(),
+        "Tachyon requires a profile without Decompress; statement support needs a slot-preservation audit",
+    );
+}
 
 #[test]
 fn native_bridge_hash_matches_application() {
