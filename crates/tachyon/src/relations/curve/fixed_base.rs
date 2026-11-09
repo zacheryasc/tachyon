@@ -10,8 +10,8 @@
 //!
 //! Free blind bits bind some scalar opening. Hash-derived scalars keep the
 //! canonical 255-bit comparator: h + p recomposes to h but reads differently
-//! under [`crate::radix8::read`]. Amount digits bind 2v + 1 with a pinned top
-//! digit +1; the walk over `[1/2]B` subtracts `[1/2]B` to compute `[v]B`.
+//! under [`crate::radix8::fp_to_fq`]. Amount digits bind 2v + 1 with a pinned
+//! top digit +1; the walk over `[1/2]B` subtracts `[1/2]B` to compute `[v]B`.
 
 use alloc::vec::Vec;
 use core::array;

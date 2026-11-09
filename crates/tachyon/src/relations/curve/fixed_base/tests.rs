@@ -194,7 +194,7 @@ fn digest_walk_matches_native_signed_reading() {
     let modulus = add_bits(canonical(-Fp::ONE), array::from_fn(|index| index == 0)).unwrap();
     let base = ACTION_AUTH_GENERATOR.to_projective();
     for digest in digests {
-        let expected = base * radix8::read(digest);
+        let expected = base * radix8::fp_to_fq(digest);
         Simulator::<Fp>::simulate(digest, |dr, witness| {
             let element = Element::alloc(dr, &mut (), witness)?;
             let bits = arithmetic::bits::<_, 255>(dr, &element)?;
@@ -204,7 +204,7 @@ fn digest_walk_matches_native_signed_reading() {
         .unwrap();
         // h + p recomposes to h but denotes a different scalar: keep the comparator.
         if let Some(wide) = add_bits(canonical(digest), modulus) {
-            assert_ne!(decode(&wide), radix8::read(digest));
+            assert_ne!(decode(&wide), radix8::fp_to_fq(digest));
         }
     }
 }

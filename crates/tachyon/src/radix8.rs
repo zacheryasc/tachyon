@@ -1,4 +1,4 @@
-//! Signed odd-digit radix-8 encoding of canonical digest bits.
+//! Signed odd-digit radix-8 encoding of canonical field element bits.
 
 use core::array;
 
@@ -9,7 +9,8 @@ use crate::pasta::{Fp, Fq};
 /// Digits indexed by the little-endian window (sign, low, high).
 pub(crate) const DIGITS: [i8; 8] = [-1, 1, -3, 3, -5, 5, -7, 7];
 
-/// The scalar a digest $h$ denotes, read as a signed odd-digit radix-8 sum:
+/// The scalar a field element $h$ denotes, read as a signed odd-digit radix-8
+/// sum:
 ///
 /// $$
 ///   \sum_{i=0}^{84} (2 s_i - 1)(1 + 2 m_i + 4 n_i) \cdot 8^i \bmod q,
@@ -21,8 +22,8 @@ pub(crate) const DIGITS: [i8; 8] = [-1, 1, -3, 3, -5, 5, -7, 7];
     clippy::indexing_slicing,
     reason = "three bits index the eight signed digits"
 )]
-pub(crate) fn read(digest: Fp) -> Fq {
-    let bits = digest
+pub(crate) fn fp_to_fq(element: Fp) -> Fq {
+    let bits = element
         .to_bytes()
         .map(|byte| array::from_fn::<u8, 8, _>(|shift| (byte >> shift) & 1));
     let (windows, _) = bits.as_flattened().as_chunks::<3>();
