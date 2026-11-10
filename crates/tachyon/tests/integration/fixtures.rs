@@ -1,7 +1,8 @@
 extern crate alloc;
 
 use alloc::{collections::BTreeMap, vec, vec::Vec};
-use core::{cell::RefCell, iter, mem, ops::RangeInclusive};
+use core::{cell::RefCell, iter, mem, ops::Deref, ops::RangeInclusive};
+use std::sync::Mutex;
 
 use ragu_circuits::polynomials::{ProductionRank, Rank as _};
 use ragu_core::{
@@ -42,8 +43,36 @@ use zcash_tachyon::{
     value, witness,
 };
 
-pub fn application() -> Box<Application<'static, Pasta, ProductionRank, HEADER_SIZE>> {
-    stamp::proof::new_application().unwrap()
+static APPLICATIONS: Mutex<Vec<Box<Application<'static, Pasta, ProductionRank, HEADER_SIZE>>>> =
+    Mutex::new(Vec::new());
+
+/// An [`Application`] checked out of [`APPLICATIONS`] for one test; dropping
+/// it returns the instance to the pool.
+pub struct ApplicationLease(Option<Box<Application<'static, Pasta, ProductionRank, HEADER_SIZE>>>);
+
+impl Deref for ApplicationLease {
+    type Target = Application<'static, Pasta, ProductionRank, HEADER_SIZE>;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_deref().unwrap()
+    }
+}
+
+impl Drop for ApplicationLease {
+    fn drop(&mut self) {
+        APPLICATIONS.lock().unwrap().extend(self.0.take());
+    }
+}
+
+/// Leases a pooled [`Application`], building one when the pool is empty.
+///
+/// A test takes at most one lease, so the pool never holds more instances
+/// than the harness has threads. The mutex is held only to pop and push.
+pub fn application() -> ApplicationLease {
+    let pooled = APPLICATIONS.lock().unwrap().pop();
+    ApplicationLease(Some(
+        pooled.unwrap_or_else(|| stamp::proof::new_application().unwrap()),
+    ))
 }
 
 pub(crate) struct WithPolynomials<S>(pub S, pub [Vec<Fp>; 2]);
