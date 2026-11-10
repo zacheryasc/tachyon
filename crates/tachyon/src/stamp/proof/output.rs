@@ -131,8 +131,10 @@ impl Step<Pasta> for OutputBind {
             &mut (),
             witness.as_ref().map(|data| Fp::from(data.0.psi)),
         )?;
-        let cm = poseidon::with_driver::note_commitment(dr, &rcm, &pk, &amount, &psi)?;
-        let pad = poseidon::with_driver::pad_tachygram(dr, &rcm, &pk, &amount, &psi)?;
+        let cm =
+            poseidon::with_sponge::note_commitment(dr, &rcm, &pk, &amount, &psi)?.squeeze(dr)?;
+        let pad =
+            poseidon::with_sponge::pad_tachygram(dr, &rcm, &pk, &amount, &psi)?.squeeze(dr)?;
         cm.clone().enforce_nonzero(dr)?;
         pad.clone().enforce_nonzero(dr)?;
         let rcv_bits = curve::fixed_base::unsigned::free_bits(

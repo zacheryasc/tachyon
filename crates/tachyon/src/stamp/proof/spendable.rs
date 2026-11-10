@@ -153,7 +153,8 @@ impl Step<Pasta> for SpendableInit {
         // consensus membership of the eventual spend anchor binds the rest
         // (see the step doc).
         let anchor =
-            poseidon::with_driver::anchor_next_stamp(dr, &previous, &epoch, oracles.bridge_hash())?;
+            poseidon::with_sponge::anchor_next_stamp(dr, &previous, &epoch, oracles.bridge_hash())?
+                .squeeze(dr)?;
         let x = left_encoded.as_gadget().cm.clone();
         // Inclusion: cm ∈ set ⇔ the set polynomial vanishes at cm.
         let evaluation = oracles.query(dr, Slot::output(1), &x)?;

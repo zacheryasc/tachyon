@@ -9,24 +9,16 @@
 use core::array;
 
 use ragu_core::{
-    Cycle as _, PoseidonPermutation as _, Result,
-    drivers::{
-        Driver,
-        emulator::{Emulator, Wireless},
-    },
+    PoseidonPermutation as _, Result,
+    drivers::emulator::{Emulator, Wireless},
     maybe::{Always, Maybe as _},
-    pasta::{Pasta, PoseidonFp},
+    pasta::PoseidonFp,
 };
-use ragu_primitives::{
-    Element,
-    poseidon::{Sponge, SpongeState},
-    vec::FixedVec,
-};
-use udon::{curve::Affine as _, field::Field as _};
+use ragu_primitives::{Element, poseidon::Sponge};
+use udon::curve::Affine as _;
 
 use crate::{
     constants::EVIDENCE_TREE_ARITY,
-    pasta,
     pasta::{EpAffine, Fp},
 };
 
@@ -44,11 +36,12 @@ fn squeeze(emulator: &mut Emu, sponge: &mut Sponge<'static, Emu, PoseidonFp>) ->
     *squeezed.value().take()
 }
 
-/// Opens the sponge of `domain` with capacity element $\mathsf{tag}$ over a
-/// zero rate, then absorbs `input`.
-fn tagged_sponge<const L: usize>(
-    domain: &[u8; 16],
+fn native_sponge<const L: usize>(
     input: [Fp; L],
+    build: impl FnOnce(
+        &mut Emu,
+        [&Element<'static, Emu>; L],
+    ) -> Result<Sponge<'static, Emu, PoseidonFp>>,
 ) -> (Emu, Sponge<'static, Emu, PoseidonFp>) {
     let mut emulator = Emu::execute();
     let elements = input.map(|value| Element::constant(&mut emulator, value));
@@ -56,37 +49,19 @@ fn tagged_sponge<const L: usize>(
         clippy::expect_used,
         reason = "sponge absorb cannot fail in wireless `Always` mode"
     )]
-    let sponge =
-        tagged_sponge_with_driver(&mut emulator, domain, elements.each_ref()).expect("infallible");
+    let sponge = build(&mut emulator, elements.each_ref()).expect("infallible");
     (emulator, sponge)
 }
 
-fn hash<const L: usize>(domain: &[u8; 16], input: [Fp; L]) -> Fp {
-    let (mut emulator, mut sponge) = tagged_sponge(domain, input);
+fn hash<const L: usize>(
+    input: [Fp; L],
+    build: impl FnOnce(
+        &mut Emu,
+        [&Element<'static, Emu>; L],
+    ) -> Result<Sponge<'static, Emu, PoseidonFp>>,
+) -> Fp {
+    let (mut emulator, mut sponge) = native_sponge(input, build);
     squeeze(&mut emulator, &mut sponge)
-}
-
-fn tagged_sponge_with_driver<'dr, D: Driver<'dr, F = Fp>, const L: usize>(
-    driver: &mut D,
-    domain: &[u8; 16],
-    input: [&Element<'dr, D>; L],
-) -> Result<Sponge<'dr, D, PoseidonFp>> {
-    const { assert!(L > 0, "a tagged hash must absorb at least one element") };
-    let capacity = Fp::from_u128(u128::from_le_bytes(*domain));
-
-    let state = SpongeState::from_elements(FixedVec::from_fn(|index| {
-        let value = if index == PoseidonFp::RATE {
-            capacity
-        } else {
-            Fp::ZERO
-        };
-        Element::constant(driver, value)
-    }));
-    let mut sponge = Sponge::resume(state, Pasta::circuit_poseidon(pasta::baked()));
-    for value in input {
-        sponge.absorb(driver, value)?;
-    }
-    Ok(sponge)
 }
 
 const FEE_BLIND_DOMAIN: &[u8; 16] = b"Tachyon-FeeBlind";
@@ -96,7 +71,9 @@ const FEE_BLIND_DOMAIN: &[u8; 16] = b"Tachyon-FeeBlind";
 /// \mathsf{rcm})$.
 #[must_use]
 pub fn feemax_blind(pk: Fp, psi: Fp, rcm: Fp) -> Fp {
-    hash::<3>(FEE_BLIND_DOMAIN, [pk, psi, rcm])
+    hash([pk, psi, rcm], |dr, [key, trapdoor, blind]| {
+        with_sponge::feemax_blind(dr, key, trapdoor, blind)
+    })
 }
 
 const FEE_DIGEST_DOMAIN: &[u8; 16] = b"Tachyon-FeeDg\0\0\0";
@@ -114,7 +91,12 @@ pub fn fee_digest(cv_feemax: EpAffine, fee: u64) -> Fp {
     let (x, y) = cv_feemax
         .coordinates()
         .expect("cv_feemax must not be the identity");
-    hash::<3>(FEE_DIGEST_DOMAIN, [x, y, Fp::from(fee)])
+    hash(
+        [x, y, Fp::from(fee)],
+        |dr, [horizontal, vertical, amount]| {
+            with_sponge::fee_digest(dr, (horizontal, vertical), amount)
+        },
+    )
 }
 
 const ACTION_DIGEST_DOMAIN: &[u8; 16] = b"Tachyon-ActionDg";
@@ -130,7 +112,22 @@ pub fn action_digest(cv: EpAffine, rk: EpAffine) -> Fp {
     let (cv_x, cv_y) = cv.coordinates().expect("cv must not be the identity");
     #[expect(clippy::expect_used, reason = "callers reject the identity")]
     let (rk_x, rk_y) = rk.coordinates().expect("rk must not be the identity");
-    hash::<4>(ACTION_DIGEST_DOMAIN, [cv_x, cv_y, rk_x, rk_y])
+    hash(
+        [cv_x, cv_y, rk_x, rk_y],
+        |dr,
+         [
+            commit_horizontal,
+            commit_vertical,
+            auth_horizontal,
+            auth_vertical,
+        ]| {
+            with_sponge::action_digest(
+                dr,
+                (commit_horizontal, commit_vertical),
+                (auth_horizontal, auth_vertical),
+            )
+        },
+    )
 }
 
 const PAYMENT_KEY_DOMAIN: &[u8; 16] = b"Tachyon-PkDerive";
@@ -147,7 +144,9 @@ pub fn payment_key(ak: EpAffine, nk: Fp) -> Fp {
         reason = "ak = [ask]G for a PRF-derived ask is not the identity"
     )]
     let (x, y) = ak.coordinates().expect("ak must not be the identity");
-    hash::<3>(PAYMENT_KEY_DOMAIN, [x, y, nk])
+    hash([x, y, nk], |dr, [horizontal, vertical, key]| {
+        with_sponge::payment_key(dr, (horizontal, vertical), key)
+    })
 }
 
 const NOTE_COMMITMENT_DOMAIN: &[u8; 16] = b"Tachyon-CmDerive";
@@ -155,7 +154,12 @@ const NOTE_COMMITMENT_DOMAIN: &[u8; 16] = b"Tachyon-CmDerive";
 /// Derives a note commitment from note fields.
 #[must_use]
 pub fn note_commitment(rcm: Fp, pk: Fp, value: u64, psi: Fp) -> Fp {
-    hash::<4>(NOTE_COMMITMENT_DOMAIN, [rcm, pk, Fp::from(value), psi])
+    hash(
+        [rcm, pk, Fp::from(value), psi],
+        |dr, [blind, key, amount, trapdoor]| {
+            with_sponge::note_commitment(dr, blind, key, amount, trapdoor)
+        },
+    )
 }
 
 const PAD_COMMITMENT_DOMAIN: &[u8; 16] = b"Tachyon-CmOutPad";
@@ -168,7 +172,12 @@ const PAD_COMMITMENT_DOMAIN: &[u8; 16] = b"Tachyon-CmOutPad";
 /// observer pair them off and recover the output count.
 #[must_use]
 pub fn pad_tachygram(rcm: Fp, pk: Fp, value: u64, psi: Fp) -> Fp {
-    hash::<4>(PAD_COMMITMENT_DOMAIN, [rcm, pk, Fp::from(value), psi])
+    hash(
+        [rcm, pk, Fp::from(value), psi],
+        |dr, [blind, key, amount, trapdoor]| {
+            with_sponge::pad_tachygram(dr, blind, key, amount, trapdoor)
+        },
+    )
 }
 
 const NULLIFIER_MASTER_DOMAIN: &[u8; 16] = b"Tachyon-NfMaster";
@@ -182,7 +191,9 @@ const NULLIFIER_MASTER_DOMAIN: &[u8; 16] = b"Tachyon-NfMaster";
 /// $$
 #[must_use]
 pub fn nf_master(psi: Fp, nk: Fp) -> Fp {
-    hash::<2>(NULLIFIER_MASTER_DOMAIN, [psi, nk])
+    hash([psi, nk], |dr, [trapdoor, key]| {
+        with_sponge::nf_master(dr, trapdoor, key)
+    })
 }
 
 const SPEND_ALPHA_DOMAIN: &[u8; 16] = b"Tachyon-Spend\0\0\0";
@@ -194,7 +205,9 @@ const SPEND_ALPHA_DOMAIN: &[u8; 16] = b"Tachyon-Spend\0\0\0";
 /// $$
 #[must_use]
 pub fn alpha_spend(theta: Fp, cm: Fp) -> Fp {
-    hash::<2>(SPEND_ALPHA_DOMAIN, [theta, cm])
+    hash([theta, cm], |dr, [entropy, commitment]| {
+        with_sponge::alpha_spend(dr, entropy, commitment)
+    })
 }
 
 const OUTPUT_ALPHA_DOMAIN: &[u8; 16] = b"Tachyon-Output\0\0";
@@ -206,7 +219,9 @@ const OUTPUT_ALPHA_DOMAIN: &[u8; 16] = b"Tachyon-Output\0\0";
 /// $$
 #[must_use]
 pub fn alpha_output(theta: Fp, cm: Fp) -> Fp {
-    hash::<2>(OUTPUT_ALPHA_DOMAIN, [theta, cm])
+    hash([theta, cm], |dr, [entropy, commitment]| {
+        with_sponge::alpha_output(dr, entropy, commitment)
+    })
 }
 
 const NULLIFIER_DOMAIN: &[u8; 16] = b"Tachyon-NfDerive";
@@ -220,7 +235,9 @@ const NULLIFIER_DOMAIN: &[u8; 16] = b"Tachyon-NfDerive";
 /// native and the element count is fixed at `RATE`, so this is unreachable.
 #[must_use]
 pub fn nullifier_group(mk: Fp, epoch_start: Fp) -> [Fp; PoseidonFp::RATE] {
-    let (mut emulator, mut sponge) = tagged_sponge(NULLIFIER_DOMAIN, [mk, epoch_start]);
+    let (mut emulator, mut sponge) = native_sponge([mk, epoch_start], |dr, [master, start]| {
+        with_sponge::nullifier_group(dr, master, start)
+    });
     array::from_fn(|_| squeeze(&mut emulator, &mut sponge))
 }
 
@@ -238,7 +255,17 @@ pub fn anchor_next_stamp(anchor_prev: Fp, epoch: Fp, stamp_hash: EpAffine) -> Fp
     let (x, y) = stamp_hash
         .coordinates()
         .expect("bridge hash must not be the identity point");
-    hash::<4>(ANCHOR_STAMP_DOMAIN, [anchor_prev, epoch, x, y])
+    hash(
+        [anchor_prev, epoch, x, y],
+        |dr, [previous, index, horizontal, vertical]| {
+            with_sponge::anchor_next_stamp(
+                dr,
+                previous,
+                index,
+                &[horizontal.clone(), vertical.clone()],
+            )
+        },
+    )
 }
 
 const QR_BUCKET_DOMAIN: &[u8; 16] = b"Tachyon-QrBucket";
@@ -264,8 +291,7 @@ pub fn evidence_tree_leaf(
     let (contents_x, contents_y) = contents
         .coordinates()
         .expect("bridge hash must not be the identity point");
-    hash::<8>(
-        QR_BUCKET_DOMAIN,
+    hash(
         [
             epoch,
             anchor_start,
@@ -276,6 +302,17 @@ pub fn evidence_tree_leaf(
             contents_x,
             contents_y,
         ],
+        |dr, [index, start, end, routing, level, profile, x, y]| {
+            with_sponge::evidence_tree_leaf(
+                dr,
+                index,
+                start,
+                end,
+                routing,
+                (level, profile),
+                &[x.clone(), y.clone()],
+            )
+        },
     )
 }
 
@@ -288,7 +325,9 @@ pub fn evidence_tree_leaf(
 /// $$
 #[must_use]
 pub fn evidence_tree_node(children: [Fp; EVIDENCE_TREE_ARITY]) -> Fp {
-    hash::<EVIDENCE_TREE_ARITY>(EVIDENCE_NODE_DOMAIN, children)
+    hash(children, |dr, elements| {
+        with_sponge::evidence_tree_node(dr, &elements.map(Clone::clone))
+    })
 }
 
 const ANCHOR_EPOCH_DOMAIN: &[u8; 16] = b"Tachyon-AnchorEp";
@@ -299,53 +338,116 @@ const ANCHOR_EPOCH_DOMAIN: &[u8; 16] = b"Tachyon-AnchorEp";
 /// anchor of the epoch before.
 #[must_use]
 pub fn anchor_next_epoch(anchor_prev: Fp, epoch: Fp) -> Fp {
-    hash::<2>(ANCHOR_EPOCH_DOMAIN, [anchor_prev, epoch])
+    hash([anchor_prev, epoch], |dr, [previous, index]| {
+        with_sponge::anchor_next_epoch(dr, previous, index)
+    })
 }
 
-/// Protocol hashes evaluated with a circuit driver.
-pub(crate) mod with_driver {
-    use ragu_core::{PoseidonPermutation as _, Result, drivers::Driver, pasta::PoseidonFp};
-    use ragu_primitives::Element;
+/// Builds domain-tagged sponges and absorbs protocol inputs.
+/// The caller performs every squeeze.
+pub(crate) mod with_sponge {
+    use ragu_core::{
+        Cycle as _, PoseidonPermutation as _, Result,
+        drivers::Driver,
+        pasta::{Pasta, PoseidonFp},
+    };
+    use ragu_primitives::{
+        Element,
+        poseidon::{Sponge, SpongeState},
+        vec::FixedVec,
+    };
+    use udon::field::Field as _;
 
     use super::{
         ACTION_DIGEST_DOMAIN, ANCHOR_EPOCH_DOMAIN, ANCHOR_STAMP_DOMAIN, EVIDENCE_NODE_DOMAIN,
         FEE_BLIND_DOMAIN, FEE_DIGEST_DOMAIN, NOTE_COMMITMENT_DOMAIN, NULLIFIER_DOMAIN,
         NULLIFIER_MASTER_DOMAIN, OUTPUT_ALPHA_DOMAIN, PAD_COMMITMENT_DOMAIN, PAYMENT_KEY_DOMAIN,
-        QR_BUCKET_DOMAIN, SPEND_ALPHA_DOMAIN, tagged_sponge_with_driver,
+        QR_BUCKET_DOMAIN, SPEND_ALPHA_DOMAIN,
     };
-    use crate::{constants::EVIDENCE_TREE_ARITY, pasta::Fp};
+    use crate::{constants::EVIDENCE_TREE_ARITY, pasta, pasta::Fp};
+
+    fn absorb<'dr, D: Driver<'dr, F = Fp>, const L: usize>(
+        dr: &mut D,
+        mut sponge: Sponge<'dr, D, PoseidonFp>,
+        input: [&Element<'dr, D>; L],
+    ) -> Result<Sponge<'dr, D, PoseidonFp>> {
+        for value in input {
+            sponge.absorb(dr, value)?;
+        }
+        Ok(sponge)
+    }
 
     pub(crate) fn feemax_blind<'dr, D: Driver<'dr, F = Fp>>(
         dr: &mut D,
         pk: &Element<'dr, D>,
         psi: &Element<'dr, D>,
         rcm: &Element<'dr, D>,
-    ) -> Result<Element<'dr, D>> {
-        tagged_sponge_with_driver(dr, FEE_BLIND_DOMAIN, [pk, psi, rcm])?.squeeze(dr)
+    ) -> Result<Sponge<'dr, D, PoseidonFp>> {
+        let capacity = Fp::from_u128(u128::from_le_bytes(*FEE_BLIND_DOMAIN));
+        let state = SpongeState::from_elements(FixedVec::from_fn(|index| {
+            let value = if index == PoseidonFp::RATE {
+                capacity
+            } else {
+                Fp::ZERO
+            };
+            Element::constant(dr, value)
+        }));
+        let sponge = Sponge::resume(state, Pasta::circuit_poseidon(pasta::baked()));
+        absorb(dr, sponge, [pk, psi, rcm])
     }
 
     pub(crate) fn fee_digest<'dr, D: Driver<'dr, F = Fp>>(
         dr: &mut D,
         cv: (&Element<'dr, D>, &Element<'dr, D>),
         fee: &Element<'dr, D>,
-    ) -> Result<Element<'dr, D>> {
-        tagged_sponge_with_driver(dr, FEE_DIGEST_DOMAIN, [cv.0, cv.1, fee])?.squeeze(dr)
+    ) -> Result<Sponge<'dr, D, PoseidonFp>> {
+        let capacity = Fp::from_u128(u128::from_le_bytes(*FEE_DIGEST_DOMAIN));
+        let state = SpongeState::from_elements(FixedVec::from_fn(|index| {
+            let value = if index == PoseidonFp::RATE {
+                capacity
+            } else {
+                Fp::ZERO
+            };
+            Element::constant(dr, value)
+        }));
+        let sponge = Sponge::resume(state, Pasta::circuit_poseidon(pasta::baked()));
+        absorb(dr, sponge, [cv.0, cv.1, fee])
     }
 
     pub(crate) fn action_digest<'dr, D: Driver<'dr, F = Fp>>(
         dr: &mut D,
         cv: (&Element<'dr, D>, &Element<'dr, D>),
         rk: (&Element<'dr, D>, &Element<'dr, D>),
-    ) -> Result<Element<'dr, D>> {
-        tagged_sponge_with_driver(dr, ACTION_DIGEST_DOMAIN, [cv.0, cv.1, rk.0, rk.1])?.squeeze(dr)
+    ) -> Result<Sponge<'dr, D, PoseidonFp>> {
+        let capacity = Fp::from_u128(u128::from_le_bytes(*ACTION_DIGEST_DOMAIN));
+        let state = SpongeState::from_elements(FixedVec::from_fn(|index| {
+            let value = if index == PoseidonFp::RATE {
+                capacity
+            } else {
+                Fp::ZERO
+            };
+            Element::constant(dr, value)
+        }));
+        let sponge = Sponge::resume(state, Pasta::circuit_poseidon(pasta::baked()));
+        absorb(dr, sponge, [cv.0, cv.1, rk.0, rk.1])
     }
 
     pub(crate) fn payment_key<'dr, D: Driver<'dr, F = Fp>>(
         dr: &mut D,
         ak: (&Element<'dr, D>, &Element<'dr, D>),
         nk: &Element<'dr, D>,
-    ) -> Result<Element<'dr, D>> {
-        tagged_sponge_with_driver(dr, PAYMENT_KEY_DOMAIN, [ak.0, ak.1, nk])?.squeeze(dr)
+    ) -> Result<Sponge<'dr, D, PoseidonFp>> {
+        let capacity = Fp::from_u128(u128::from_le_bytes(*PAYMENT_KEY_DOMAIN));
+        let state = SpongeState::from_elements(FixedVec::from_fn(|index| {
+            let value = if index == PoseidonFp::RATE {
+                capacity
+            } else {
+                Fp::ZERO
+            };
+            Element::constant(dr, value)
+        }));
+        let sponge = Sponge::resume(state, Pasta::circuit_poseidon(pasta::baked()));
+        absorb(dr, sponge, [ak.0, ak.1, nk])
     }
 
     pub(crate) fn note_commitment<'dr, D: Driver<'dr, F = Fp>>(
@@ -354,8 +456,18 @@ pub(crate) mod with_driver {
         pk: &Element<'dr, D>,
         value: &Element<'dr, D>,
         psi: &Element<'dr, D>,
-    ) -> Result<Element<'dr, D>> {
-        tagged_sponge_with_driver(dr, NOTE_COMMITMENT_DOMAIN, [rcm, pk, value, psi])?.squeeze(dr)
+    ) -> Result<Sponge<'dr, D, PoseidonFp>> {
+        let capacity = Fp::from_u128(u128::from_le_bytes(*NOTE_COMMITMENT_DOMAIN));
+        let state = SpongeState::from_elements(FixedVec::from_fn(|index| {
+            let initial = if index == PoseidonFp::RATE {
+                capacity
+            } else {
+                Fp::ZERO
+            };
+            Element::constant(dr, initial)
+        }));
+        let sponge = Sponge::resume(state, Pasta::circuit_poseidon(pasta::baked()));
+        absorb(dr, sponge, [rcm, pk, value, psi])
     }
 
     pub(crate) fn pad_tachygram<'dr, D: Driver<'dr, F = Fp>>(
@@ -364,46 +476,90 @@ pub(crate) mod with_driver {
         pk: &Element<'dr, D>,
         value: &Element<'dr, D>,
         psi: &Element<'dr, D>,
-    ) -> Result<Element<'dr, D>> {
-        tagged_sponge_with_driver(dr, PAD_COMMITMENT_DOMAIN, [rcm, pk, value, psi])?.squeeze(dr)
+    ) -> Result<Sponge<'dr, D, PoseidonFp>> {
+        let capacity = Fp::from_u128(u128::from_le_bytes(*PAD_COMMITMENT_DOMAIN));
+        let state = SpongeState::from_elements(FixedVec::from_fn(|index| {
+            let initial = if index == PoseidonFp::RATE {
+                capacity
+            } else {
+                Fp::ZERO
+            };
+            Element::constant(dr, initial)
+        }));
+        let sponge = Sponge::resume(state, Pasta::circuit_poseidon(pasta::baked()));
+        absorb(dr, sponge, [rcm, pk, value, psi])
     }
 
     pub(crate) fn nf_master<'dr, D: Driver<'dr, F = Fp>>(
         dr: &mut D,
         psi: &Element<'dr, D>,
         nk: &Element<'dr, D>,
-    ) -> Result<Element<'dr, D>> {
-        tagged_sponge_with_driver(dr, NULLIFIER_MASTER_DOMAIN, [psi, nk])?.squeeze(dr)
+    ) -> Result<Sponge<'dr, D, PoseidonFp>> {
+        let capacity = Fp::from_u128(u128::from_le_bytes(*NULLIFIER_MASTER_DOMAIN));
+        let state = SpongeState::from_elements(FixedVec::from_fn(|index| {
+            let value = if index == PoseidonFp::RATE {
+                capacity
+            } else {
+                Fp::ZERO
+            };
+            Element::constant(dr, value)
+        }));
+        let sponge = Sponge::resume(state, Pasta::circuit_poseidon(pasta::baked()));
+        absorb(dr, sponge, [psi, nk])
     }
 
     pub(crate) fn alpha_spend<'dr, D: Driver<'dr, F = Fp>>(
         dr: &mut D,
         theta: &Element<'dr, D>,
         cm: &Element<'dr, D>,
-    ) -> Result<Element<'dr, D>> {
-        tagged_sponge_with_driver(dr, SPEND_ALPHA_DOMAIN, [theta, cm])?.squeeze(dr)
+    ) -> Result<Sponge<'dr, D, PoseidonFp>> {
+        let capacity = Fp::from_u128(u128::from_le_bytes(*SPEND_ALPHA_DOMAIN));
+        let state = SpongeState::from_elements(FixedVec::from_fn(|index| {
+            let value = if index == PoseidonFp::RATE {
+                capacity
+            } else {
+                Fp::ZERO
+            };
+            Element::constant(dr, value)
+        }));
+        let sponge = Sponge::resume(state, Pasta::circuit_poseidon(pasta::baked()));
+        absorb(dr, sponge, [theta, cm])
     }
 
     pub(crate) fn alpha_output<'dr, D: Driver<'dr, F = Fp>>(
         dr: &mut D,
         theta: &Element<'dr, D>,
         cm: &Element<'dr, D>,
-    ) -> Result<Element<'dr, D>> {
-        tagged_sponge_with_driver(dr, OUTPUT_ALPHA_DOMAIN, [theta, cm])?.squeeze(dr)
+    ) -> Result<Sponge<'dr, D, PoseidonFp>> {
+        let capacity = Fp::from_u128(u128::from_le_bytes(*OUTPUT_ALPHA_DOMAIN));
+        let state = SpongeState::from_elements(FixedVec::from_fn(|index| {
+            let value = if index == PoseidonFp::RATE {
+                capacity
+            } else {
+                Fp::ZERO
+            };
+            Element::constant(dr, value)
+        }));
+        let sponge = Sponge::resume(state, Pasta::circuit_poseidon(pasta::baked()));
+        absorb(dr, sponge, [theta, cm])
     }
 
     pub(crate) fn nullifier_group<'dr, D: Driver<'dr, F = Fp>>(
         dr: &mut D,
         master: &Element<'dr, D>,
         epoch_start: &Element<'dr, D>,
-    ) -> Result<[Element<'dr, D>; PoseidonFp::RATE]> {
-        let mut sponge = tagged_sponge_with_driver(dr, NULLIFIER_DOMAIN, [master, epoch_start])?;
-        Ok([
-            sponge.squeeze(dr)?,
-            sponge.squeeze(dr)?,
-            sponge.squeeze(dr)?,
-            sponge.squeeze(dr)?,
-        ])
+    ) -> Result<Sponge<'dr, D, PoseidonFp>> {
+        let capacity = Fp::from_u128(u128::from_le_bytes(*NULLIFIER_DOMAIN));
+        let state = SpongeState::from_elements(FixedVec::from_fn(|index| {
+            let value = if index == PoseidonFp::RATE {
+                capacity
+            } else {
+                Fp::ZERO
+            };
+            Element::constant(dr, value)
+        }));
+        let sponge = Sponge::resume(state, Pasta::circuit_poseidon(pasta::baked()));
+        absorb(dr, sponge, [master, epoch_start])
     }
 
     pub(crate) fn anchor_next_stamp<'dr, D: Driver<'dr, F = Fp>>(
@@ -411,21 +567,40 @@ pub(crate) mod with_driver {
         anchor_prev: &Element<'dr, D>,
         epoch: &Element<'dr, D>,
         bridge_hash: &[Element<'dr, D>; 2],
-    ) -> Result<Element<'dr, D>> {
-        tagged_sponge_with_driver(
+    ) -> Result<Sponge<'dr, D, PoseidonFp>> {
+        let capacity = Fp::from_u128(u128::from_le_bytes(*ANCHOR_STAMP_DOMAIN));
+        let state = SpongeState::from_elements(FixedVec::from_fn(|index| {
+            let value = if index == PoseidonFp::RATE {
+                capacity
+            } else {
+                Fp::ZERO
+            };
+            Element::constant(dr, value)
+        }));
+        let sponge = Sponge::resume(state, Pasta::circuit_poseidon(pasta::baked()));
+        absorb(
             dr,
-            ANCHOR_STAMP_DOMAIN,
+            sponge,
             [anchor_prev, epoch, &bridge_hash[0], &bridge_hash[1]],
-        )?
-        .squeeze(dr)
+        )
     }
 
     pub(crate) fn anchor_next_epoch<'dr, D: Driver<'dr, F = Fp>>(
         dr: &mut D,
         anchor_prev: &Element<'dr, D>,
         epoch: &Element<'dr, D>,
-    ) -> Result<Element<'dr, D>> {
-        tagged_sponge_with_driver(dr, ANCHOR_EPOCH_DOMAIN, [anchor_prev, epoch])?.squeeze(dr)
+    ) -> Result<Sponge<'dr, D, PoseidonFp>> {
+        let capacity = Fp::from_u128(u128::from_le_bytes(*ANCHOR_EPOCH_DOMAIN));
+        let state = SpongeState::from_elements(FixedVec::from_fn(|index| {
+            let value = if index == PoseidonFp::RATE {
+                capacity
+            } else {
+                Fp::ZERO
+            };
+            Element::constant(dr, value)
+        }));
+        let sponge = Sponge::resume(state, Pasta::circuit_poseidon(pasta::baked()));
+        absorb(dr, sponge, [anchor_prev, epoch])
     }
 
     pub(crate) fn evidence_tree_leaf<'dr, D: Driver<'dr, F = Fp>>(
@@ -436,10 +611,20 @@ pub(crate) mod with_driver {
         discriminant: &Element<'dr, D>,
         profile: (&Element<'dr, D>, &Element<'dr, D>),
         bridge_hash: &[Element<'dr, D>; 2],
-    ) -> Result<Element<'dr, D>> {
-        tagged_sponge_with_driver(
+    ) -> Result<Sponge<'dr, D, PoseidonFp>> {
+        let capacity = Fp::from_u128(u128::from_le_bytes(*QR_BUCKET_DOMAIN));
+        let state = SpongeState::from_elements(FixedVec::from_fn(|index| {
+            let value = if index == PoseidonFp::RATE {
+                capacity
+            } else {
+                Fp::ZERO
+            };
+            Element::constant(dr, value)
+        }));
+        let sponge = Sponge::resume(state, Pasta::circuit_poseidon(pasta::baked()));
+        absorb(
             dr,
-            QR_BUCKET_DOMAIN,
+            sponge,
             [
                 epoch,
                 anchor_start,
@@ -450,14 +635,23 @@ pub(crate) mod with_driver {
                 &bridge_hash[0],
                 &bridge_hash[1],
             ],
-        )?
-        .squeeze(dr)
+        )
     }
 
     pub(crate) fn evidence_tree_node<'dr, D: Driver<'dr, F = Fp>>(
         dr: &mut D,
         children: &[Element<'dr, D>; EVIDENCE_TREE_ARITY],
-    ) -> Result<Element<'dr, D>> {
-        tagged_sponge_with_driver(dr, EVIDENCE_NODE_DOMAIN, children.each_ref())?.squeeze(dr)
+    ) -> Result<Sponge<'dr, D, PoseidonFp>> {
+        let capacity = Fp::from_u128(u128::from_le_bytes(*EVIDENCE_NODE_DOMAIN));
+        let state = SpongeState::from_elements(FixedVec::from_fn(|index| {
+            let value = if index == PoseidonFp::RATE {
+                capacity
+            } else {
+                Fp::ZERO
+            };
+            Element::constant(dr, value)
+        }));
+        let sponge = Sponge::resume(state, Pasta::circuit_poseidon(pasta::baked()));
+        absorb(dr, sponge, children.each_ref())
     }
 }

@@ -46,7 +46,7 @@ fn bucket_leaf<'dr, D: Driver<'dr, F = Fp>>(
     dr: &mut D,
     bucket: &QrBucketOutput<'dr, D>,
 ) -> ragu_core::Result<Element<'dr, D>> {
-    poseidon::with_driver::evidence_tree_leaf(
+    poseidon::with_sponge::evidence_tree_leaf(
         dr,
         &bucket.epoch,
         &bucket.anchor_start,
@@ -54,7 +54,8 @@ fn bucket_leaf<'dr, D: Driver<'dr, F = Fp>>(
         &bucket.discriminant,
         (&bucket.depth, &bucket.bits),
         &bucket.contents_hash,
-    )
+    )?
+    .squeeze(dr)
 }
 
 /// A Poseidon Merkle root over one network's sealed buckets.
@@ -469,7 +470,7 @@ impl Step<Pasta> for EvidenceTreeFuse {
             right_encoded.as_gadget().first.clone(),
             right_encoded.as_gadget().second.clone(),
         ];
-        let root = poseidon::with_driver::evidence_tree_node(dr, &children)?;
+        let root = poseidon::with_sponge::evidence_tree_node(dr, &children)?.squeeze(dr)?;
         let output = D::just(|| {
             let (epoch, start, end, discriminant, ..) = left.take();
             (
@@ -545,7 +546,7 @@ impl Step<Pasta> for EvidenceTreeCap {
         let right_encoded = Encoded::<D, Self::Right, HEADER_SIZE>::new(dr, &mut (), right)?;
         let root = left_encoded.as_gadget().root.clone();
         let children = array::from_fn::<_, EVIDENCE_TREE_ARITY, _>(|_| root.clone());
-        let raised = poseidon::with_driver::evidence_tree_node(dr, &children)?;
+        let raised = poseidon::with_sponge::evidence_tree_node(dr, &children)?.squeeze(dr)?;
         let output = D::just(|| {
             let (epoch, anchor_start, anchor_next, discriminant, _) = left.take();
             (
@@ -669,7 +670,7 @@ impl Step<Pasta> for EvidenceTreeDescend {
                     witness.as_ref().map(|path| Fp::from(path.0[level].1[3])),
                 )?,
             ];
-            let hash = poseidon::with_driver::evidence_tree_node(dr, &children)?;
+            let hash = poseidon::with_sponge::evidence_tree_node(dr, &children)?.squeeze(dr)?;
             node.enforce_equal(dr, &hash).map_err(|_err| {
                 ragu_core::Error::InvalidWitness(
                     "EvidenceTreeDescend: children do not hash to the node".into(),
