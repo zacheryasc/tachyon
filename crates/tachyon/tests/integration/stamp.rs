@@ -16,9 +16,9 @@ use zcash_tachyon::{
 
 use super::fixtures::application;
 use crate::fixtures::{
-    PoolSim, WalletSim, build_autonome, build_lift_span, build_output_plan, build_output_stamp,
-    forge_overlapping_merge, random_action, random_block, random_block_with, shared_sk,
-    stamp_coverage,
+    PoolSim, WalletSim, build_lift_span, build_output_plan, build_output_stamp,
+    forge_overlapping_merge, random_action, random_block, random_block_with, shared_autonome,
+    shared_sk, stamp_coverage,
 };
 
 #[test]
@@ -369,10 +369,9 @@ fn overlapping_stamps_cannot_aggregate() {
 
 #[test]
 fn verify_proof_action_multiset_invariants() {
+    let stamped = shared_autonome();
     let application = &*application();
     let rng = &mut StdRng::seed_from_u64(0);
-    let wallet = WalletSim::new(shared_sk());
-    let stamped = build_autonome(application, rng, &wallet, 1000, 700);
 
     let digests: Vec<ActionDigest> = stamped
         .actions

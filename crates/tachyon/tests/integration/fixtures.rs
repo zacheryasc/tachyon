@@ -1,8 +1,12 @@
 extern crate alloc;
 
 use alloc::{collections::BTreeMap, vec, vec::Vec};
-use core::{cell::RefCell, iter, mem, ops::Deref, ops::RangeInclusive};
-use std::sync::Mutex;
+use core::{
+    cell::RefCell,
+    iter, mem,
+    ops::{Deref, RangeInclusive},
+};
+use std::sync::{Mutex, OnceLock};
 
 use ragu_circuits::polynomials::{ProductionRank, Rank as _};
 use ragu_core::{
@@ -66,8 +70,9 @@ impl Drop for ApplicationLease {
 
 /// Leases a pooled [`Application`], building one when the pool is empty.
 ///
-/// A test takes at most one lease, so the pool never holds more instances
-/// than the harness has threads. The mutex is held only to pop and push.
+/// A test takes at most one lease, after reading any shared fixture (whose
+/// initializer takes its own), so the pool never holds more instances than
+/// the harness has threads. The mutex is held only to pop and push.
 pub fn application() -> ApplicationLease {
     let pooled = APPLICATIONS.lock().unwrap().pop();
     ApplicationLease(Some(
@@ -245,28 +250,32 @@ pub fn build_output_stamp_with_fee<RNG: CryptoRng>(
     (stamp, plan, max_fee_note)
 }
 
-pub fn build_autonome<RNG: CryptoRng>(
-    application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
-    rng: &mut RNG,
-    wallet: &WalletSim,
-    spend_value: u64,
-    output_value: u64,
-) -> Bundle<ProofStamp<stamp::Uncompressed>> {
-    let spend_note = wallet.random_note(spend_value);
-    let output_note = wallet.random_note(output_value);
-    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
-    let stamps_cms = vec![vec![spend_note.commitment()]];
-    pool.mine(random_block_with(rng, &stamps_cms, 50));
-    let height = pool.height();
-    let spendable_pcd = wallet.spendable_init(application, rng, &spend_note, &pool, height);
-    let anchor = spendable_pcd.data().2;
-    wallet.autonome(
-        application,
-        rng,
-        anchor,
-        vec![(spend_note, spendable_pcd)],
-        vec![output_note],
-    )
+/// An autonome from [`shared_sk`] spending a 1000 note into a 700 note,
+/// proved once per process from seed 0; each caller gets a clone.
+pub fn shared_autonome() -> Bundle<ProofStamp<stamp::Uncompressed>> {
+    static AUTONOME: OnceLock<Bundle<ProofStamp<stamp::Uncompressed>>> = OnceLock::new();
+    AUTONOME
+        .get_or_init(|| {
+            let application = &*application();
+            let rng = &mut StdRng::seed_from_u64(0);
+            let wallet = WalletSim::new(shared_sk());
+            let spend_note = wallet.random_note(1000);
+            let output_note = wallet.random_note(700);
+            let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
+            let stamps_cms = vec![vec![spend_note.commitment()]];
+            pool.mine(random_block_with(rng, &stamps_cms, 50));
+            let height = pool.height();
+            let spendable_pcd = wallet.spendable_init(application, rng, &spend_note, &pool, height);
+            let anchor = spendable_pcd.data().2;
+            wallet.autonome(
+                application,
+                rng,
+                anchor,
+                vec![(spend_note, spendable_pcd)],
+                vec![output_note],
+            )
+        })
+        .clone()
 }
 
 pub fn forge_overlapping_merge<RNG: CryptoRng>(
@@ -809,6 +818,7 @@ pub(crate) fn build_qr_partition<RNG: CryptoRng>(
     layer
 }
 
+#[derive(Clone)]
 pub(crate) struct EvidenceLeaf {
     pub profile: QrProfile,
     pub contents: TachygramSetPoly,
@@ -816,6 +826,7 @@ pub(crate) struct EvidenceLeaf {
     pub path: Vec<([bool; 2], [EvidenceTreeRoot; EVIDENCE_TREE_ARITY])>,
 }
 
+#[derive(Clone)]
 pub(crate) struct EvidenceTreeEntry {
     pub pcd: ragu_pcd::Pcd<Pasta, ProductionRank, evidence::EvidenceTree>,
     pub leaves: Vec<EvidenceLeaf>,
@@ -1061,6 +1072,45 @@ pub(crate) fn small_epoch<RNG: CryptoRng>(rng: &mut RNG) -> (PoolSim, Anchor) {
     }
     let final_anchor = pool.block(pool.height()).anchor();
     (pool, final_anchor)
+}
+
+/// The [`small_epoch`] depth-2 partition at capacity 24, sealed and built
+/// into an evidence tree, proved once per process from seed 0; each caller
+/// gets a clone of the final anchor, discriminant, buckets and tree.
+pub(crate) fn small_epoch_evidence() -> (
+    Anchor,
+    QrDiscriminant,
+    Vec<QrBucketEntry>,
+    EvidenceTreeEntry,
+) {
+    static EVIDENCE: OnceLock<(
+        Anchor,
+        QrDiscriminant,
+        Vec<QrBucketEntry>,
+        EvidenceTreeEntry,
+    )> = OnceLock::new();
+    EVIDENCE
+        .get_or_init(|| {
+            let application = &*application();
+            let rng = &mut StdRng::seed_from_u64(0);
+            let (pool, final_anchor) = small_epoch(rng);
+            let discriminant = QrDiscriminant::random(rng);
+            let sealed = build_qr_partition(
+                application,
+                rng,
+                &pool,
+                (Anchor::default(), final_anchor),
+                discriminant,
+                24,
+                2,
+            )
+            .into_iter()
+            .map(|intake| seal_qr_intake(application, rng, intake, Anchor::from(Fp::ZERO)))
+            .collect::<Vec<_>>();
+            let tree = build_evidence_tree(application, rng, sealed.clone());
+            (final_anchor, discriminant, sealed, tree)
+        })
+        .clone()
 }
 
 pub(crate) fn qr_bucket_at<RNG: CryptoRng>(

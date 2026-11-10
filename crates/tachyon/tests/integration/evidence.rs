@@ -15,6 +15,7 @@ use super::fixtures::application;
 use crate::fixtures::{
     PoolSim, QrIntakeEntry, WithPolynomials, build_evidence_tree, build_qr_partition,
     open_evidence_tree, qr_bucket_at, random_block, seal_qr_intake, small_epoch,
+    small_epoch_evidence,
 };
 
 #[test]
@@ -89,30 +90,10 @@ fn evidence_tree_admission_rejects_substituted_contents() {
 
 #[test]
 fn evidence_tree_replays_the_bucket_each_leaf_holds() {
+    let (final_anchor, discriminant, sealed, tree) = small_epoch_evidence();
     let application = &*application();
     let rng = &mut StdRng::seed_from_u64(0);
-    let (pool, final_anchor) = small_epoch(rng);
-    let discriminant = QrDiscriminant::random(rng);
 
-    let routed = build_qr_partition(
-        application,
-        rng,
-        &pool,
-        (Anchor::default(), final_anchor),
-        discriminant,
-        24,
-        2,
-    );
-    let sealed = routed
-        .into_iter()
-        .map(|intake| seal_qr_intake(application, rng, intake, Anchor::from(Fp::ZERO)))
-        .collect::<Vec<_>>();
-    let expected = sealed
-        .iter()
-        .map(|bucket| *bucket.pcd.data())
-        .collect::<Vec<_>>();
-
-    let tree = build_evidence_tree(application, rng, sealed);
     let (epoch, anchor_start, anchor_next, root_discriminant, _) = *tree.pcd.data();
     assert_eq!(
         (epoch, anchor_start, anchor_next, root_discriminant),
@@ -124,9 +105,9 @@ fn evidence_tree_replays_the_bucket_each_leaf_holds() {
         )
     );
 
-    for (leaf, bucket) in tree.leaves.iter().zip(&expected) {
+    for (leaf, bucket) in tree.leaves.iter().zip(&sealed) {
         let replayed = open_evidence_tree(application, rng, tree.pcd.clone(), leaf);
-        assert_eq!(*replayed.pcd.data(), *bucket);
+        assert_eq!(*replayed.pcd.data(), *bucket.pcd.data());
         assert!(
             application
                 .verify_uncompressed(&replayed.pcd, &mut *rng)
@@ -348,24 +329,10 @@ fn evidence_tree_joins_reject_mismatched_trees() {
 
 #[test]
 fn evidence_tree_descend_and_open_reject_forgeries() {
+    let (_, _, sealed, tree) = small_epoch_evidence();
     let application = &*application();
     let rng = &mut StdRng::seed_from_u64(0);
-    let (pool, final_anchor) = small_epoch(rng);
-    let discriminant = QrDiscriminant::random(rng);
-    let sealed = build_qr_partition(
-        application,
-        rng,
-        &pool,
-        (Anchor::default(), final_anchor),
-        discriminant,
-        24,
-        2,
-    )
-    .into_iter()
-    .map(|intake| seal_qr_intake(application, rng, intake, Anchor::from(Fp::ZERO)))
-    .collect::<Vec<_>>();
     let other_contents: TachygramSetPoly = sealed[1].members.iter().copied().collect();
-    let tree = build_evidence_tree(application, rng, sealed);
     let leaf = tree.leaves.first().unwrap();
 
     let mut path = <[_; evidence::EvidenceTreeDescend::LEVELS]>::try_from(
