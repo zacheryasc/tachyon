@@ -119,11 +119,19 @@ pub fn action_digest(cv: EpAffine, rk: EpAffine) -> Fp {
     #[expect(clippy::expect_used, reason = "callers reject the identity")]
     let (rk_x, rk_y) = rk.coordinates().expect("rk must not be the identity");
     *emulate(|driver| {
-        let cv_x = Element::constant(driver, cv_x);
-        let cv_y = Element::constant(driver, cv_y);
-        let rk_x = Element::constant(driver, rk_x);
-        let rk_y = Element::constant(driver, rk_y);
-        with_driver::action_digest(driver, (&cv_x, &cv_y), (&rk_x, &rk_y))
+        let cv_elements = (
+            Element::constant(driver, cv_x),
+            Element::constant(driver, cv_y),
+        );
+        let rk_elements = (
+            Element::constant(driver, rk_x),
+            Element::constant(driver, rk_y),
+        );
+        with_driver::action_digest(
+            driver,
+            (&cv_elements.0, &cv_elements.1),
+            (&rk_elements.0, &rk_elements.1),
+        )
     })
     .value()
     .take()
