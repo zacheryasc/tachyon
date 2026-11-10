@@ -96,8 +96,8 @@ fn fee_fuse_rejects_maximum_above_max_money() {
         let walk_value =
             Balance::try_from(i128::from(truncated_slack) - i128::from(MAX_MONEY)).unwrap();
         let walk_digest = fee::Descriptor {
-            max_commitment: fee_note.fee_blind().commit(walk_value),
-            value: fee_witness.1,
+            cv_feemax: fee_note.derive_feemax_blind().commit(walk_value),
+            v_fee: fee_witness.1,
         }
         .digest()
         .unwrap();
