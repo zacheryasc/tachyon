@@ -18,6 +18,7 @@
 //! anchor endpoints belong to the published per-block anchor sequence.
 
 #![allow(clippy::module_name_repetitions, reason = "intentional names")]
+
 extern crate alloc;
 
 use alloc::vec::Vec;

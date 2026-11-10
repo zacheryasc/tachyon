@@ -70,7 +70,7 @@ fn enforce_stamp_domain<'dr, D: Driver<'dr, F = pasta::Fp>>(
     Ok(())
 }
 
-/// Eight payload elements for QR split, selection and bucket headers, plus one
+/// Eight payload elements for QR split/selection and bucket headers and one
 /// suffix element.
 pub const HEADER_SIZE: usize = 9;
 

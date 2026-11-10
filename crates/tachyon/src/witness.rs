@@ -169,7 +169,8 @@ pub fn anchor_span_seed(
 
 /// Prepare the witness for [`AnchorSpanFuse`]: `(combined,)`.
 ///
-/// `left_members` and `right_members` are the members of the two halves.
+/// `left_members` and `right_members` are the member polynomials of the two
+/// halves.
 #[must_use]
 pub fn anchor_span_fuse(
     (_left, _right): (StepLeft<AnchorSpanFuse>, StepRight<AnchorSpanFuse>),
@@ -202,9 +203,14 @@ pub fn summary_advance(
     acc_tgs: &[Tachygram],
     stamp_tgs: &[Tachygram],
 ) -> StepWitness<'static, SummaryAdvance> {
+    let extended = acc_tgs
+        .iter()
+        .chain(stamp_tgs.iter())
+        .copied()
+        .collect::<TachygramSetPoly>();
     (
-        acc_tgs.iter().chain(stamp_tgs).copied().collect(),
-        stamp_tgs.iter().copied().collect(),
+        extended,
+        stamp_tgs.iter().copied().collect::<TachygramSetPoly>(),
     )
 }
 
@@ -533,8 +539,9 @@ pub const fn stamp_unmerge(
 /// Prepare the witness for [`FeeFuse`]: `(max_fee_note, fee,
 /// (output_action_set, output_tachygram_set))`.
 ///
-/// `action_digests` and `tachygrams` are the left `Actions` sets. The output
-/// sets add the fee digest and the fee change note's commitment.
+/// `action_digests` and `tachygrams` are the left `Actions` sets. Each fee
+/// singleton set contains one element: the fee digest or the fee change note's
+/// commitment. The output set polynomials represent the unions.
 ///
 /// # Panics
 ///

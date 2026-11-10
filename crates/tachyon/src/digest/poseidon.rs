@@ -1,12 +1,12 @@
 //! Tachyon Poseidon digests.
 //!
 //! Each named function provides one protocol-defined hash.
-//! The shared definitions live in [`with_driver`]; native entry points evaluate
-//! those definitions on the wireless emulator.
 //!
 //! A tagged hash starts from a zero rate and the capacity element
 //! $\mathsf{tag}$, the 16-byte domain read as a little-endian integer. It
 //! absorbs only its data. Every Tachyon Poseidon hash is tagged this way.
+
+use core::array;
 
 use ragu_core::{
     Cycle as _, PoseidonPermutation as _, Result,
@@ -30,17 +30,43 @@ use crate::{
     pasta::{EpAffine, Fp},
 };
 
+/// The wireless emulator that evaluates the real in-circuit sponge natively:
+/// witness values are always present and no wires are tracked, so absorb and
+/// squeeze compute field values without building constraints.
+type Emu = Emulator<Wireless<Always<()>, Fp>>;
+
 #[expect(
     clippy::expect_used,
-    reason = "fixed protocol hashes cannot fail on the wireless emulator"
+    reason = "sponge squeeze cannot fail in wireless `Always` mode"
 )]
-fn emulate<T>(hash: impl FnOnce(&mut Emulator<Wireless<Always<()>, Fp>>) -> Result<T>) -> T {
-    hash(&mut Emulator::execute()).expect("infallible")
+fn squeeze(emulator: &mut Emu, sponge: &mut Sponge<'static, Emu, PoseidonFp>) -> Fp {
+    let squeezed = sponge.squeeze(emulator).expect("infallible");
+    *squeezed.value().take()
 }
 
 /// Opens the sponge of `domain` with capacity element $\mathsf{tag}$ over a
 /// zero rate, then absorbs `input`.
-fn tagged_sponge<'dr, D: Driver<'dr, F = Fp>, const L: usize>(
+fn tagged_sponge<const L: usize>(
+    domain: &[u8; 16],
+    input: [Fp; L],
+) -> (Emu, Sponge<'static, Emu, PoseidonFp>) {
+    let mut emulator = Emu::execute();
+    let elements = input.map(|value| Element::constant(&mut emulator, value));
+    #[expect(
+        clippy::expect_used,
+        reason = "sponge absorb cannot fail in wireless `Always` mode"
+    )]
+    let sponge =
+        tagged_sponge_with_driver(&mut emulator, domain, elements.each_ref()).expect("infallible");
+    (emulator, sponge)
+}
+
+fn hash<const L: usize>(domain: &[u8; 16], input: [Fp; L]) -> Fp {
+    let (mut emulator, mut sponge) = tagged_sponge(domain, input);
+    squeeze(&mut emulator, &mut sponge)
+}
+
+fn tagged_sponge_with_driver<'dr, D: Driver<'dr, F = Fp>, const L: usize>(
     driver: &mut D,
     domain: &[u8; 16],
     input: [&Element<'dr, D>; L],
@@ -66,18 +92,11 @@ fn tagged_sponge<'dr, D: Driver<'dr, F = Fp>, const L: usize>(
 const FEE_BLIND_DOMAIN: &[u8; 16] = b"Tachyon-FeeBlind";
 
 /// The feemax blind, the trapdoor of $\mathsf{cv}_\mathsf{feemax}$,
-/// $r =\mathsf{Poseidon}_\texttt{Tachyon-FeeBlind}(\mathsf{pk}, \psi,
+/// $r = \mathsf{Poseidon}_\texttt{Tachyon-FeeBlind}(\mathsf{pk}, \psi,
 /// \mathsf{rcm})$.
 #[must_use]
 pub fn feemax_blind(pk: Fp, psi: Fp, rcm: Fp) -> Fp {
-    *emulate(|driver| {
-        let pk_element = Element::constant(driver, pk);
-        let psi_element = Element::constant(driver, psi);
-        let rcm_element = Element::constant(driver, rcm);
-        with_driver::feemax_blind(driver, &pk_element, &psi_element, &rcm_element)
-    })
-    .value()
-    .take()
+    hash::<3>(FEE_BLIND_DOMAIN, [pk, psi, rcm])
 }
 
 const FEE_DIGEST_DOMAIN: &[u8; 16] = b"Tachyon-FeeDg\0\0\0";
@@ -95,14 +114,7 @@ pub fn fee_digest(cv_feemax: EpAffine, fee: u64) -> Fp {
     let (x, y) = cv_feemax
         .coordinates()
         .expect("cv_feemax must not be the identity");
-    *emulate(|driver| {
-        let x_element = Element::constant(driver, x);
-        let y_element = Element::constant(driver, y);
-        let fee_element = Element::constant(driver, Fp::from(fee));
-        with_driver::fee_digest(driver, (&x_element, &y_element), &fee_element)
-    })
-    .value()
-    .take()
+    hash::<3>(FEE_DIGEST_DOMAIN, [x, y, Fp::from(fee)])
 }
 
 const ACTION_DIGEST_DOMAIN: &[u8; 16] = b"Tachyon-ActionDg";
@@ -113,28 +125,12 @@ const ACTION_DIGEST_DOMAIN: &[u8; 16] = b"Tachyon-ActionDg";
 ///
 /// Panics if `cv` or `rk` is the identity.
 #[must_use]
-#[expect(
-    clippy::similar_names,
-    reason = "x and y coordinate elements of each point"
-)]
 pub fn action_digest(cv: EpAffine, rk: EpAffine) -> Fp {
     #[expect(clippy::expect_used, reason = "callers reject the identity")]
     let (cv_x, cv_y) = cv.coordinates().expect("cv must not be the identity");
     #[expect(clippy::expect_used, reason = "callers reject the identity")]
     let (rk_x, rk_y) = rk.coordinates().expect("rk must not be the identity");
-    *emulate(|driver| {
-        let cv_x_element = Element::constant(driver, cv_x);
-        let cv_y_element = Element::constant(driver, cv_y);
-        let rk_x_element = Element::constant(driver, rk_x);
-        let rk_y_element = Element::constant(driver, rk_y);
-        with_driver::action_digest(
-            driver,
-            (&cv_x_element, &cv_y_element),
-            (&rk_x_element, &rk_y_element),
-        )
-    })
-    .value()
-    .take()
+    hash::<4>(ACTION_DIGEST_DOMAIN, [cv_x, cv_y, rk_x, rk_y])
 }
 
 const PAYMENT_KEY_DOMAIN: &[u8; 16] = b"Tachyon-PkDerive";
@@ -151,14 +147,7 @@ pub fn payment_key(ak: EpAffine, nk: Fp) -> Fp {
         reason = "ak = [ask]G for a PRF-derived ask is not the identity"
     )]
     let (x, y) = ak.coordinates().expect("ak must not be the identity");
-    *emulate(|driver| {
-        let x_element = Element::constant(driver, x);
-        let y_element = Element::constant(driver, y);
-        let nk_element = Element::constant(driver, nk);
-        with_driver::payment_key(driver, (&x_element, &y_element), &nk_element)
-    })
-    .value()
-    .take()
+    hash::<3>(PAYMENT_KEY_DOMAIN, [x, y, nk])
 }
 
 const NOTE_COMMITMENT_DOMAIN: &[u8; 16] = b"Tachyon-CmDerive";
@@ -166,21 +155,7 @@ const NOTE_COMMITMENT_DOMAIN: &[u8; 16] = b"Tachyon-CmDerive";
 /// Derives a note commitment from note fields.
 #[must_use]
 pub fn note_commitment(rcm: Fp, pk: Fp, value: u64, psi: Fp) -> Fp {
-    *emulate(|driver| {
-        let rcm_element = Element::constant(driver, rcm);
-        let pk_element = Element::constant(driver, pk);
-        let value_element = Element::constant(driver, Fp::from(value));
-        let psi_element = Element::constant(driver, psi);
-        with_driver::note_commitment(
-            driver,
-            &rcm_element,
-            &pk_element,
-            &value_element,
-            &psi_element,
-        )
-    })
-    .value()
-    .take()
+    hash::<4>(NOTE_COMMITMENT_DOMAIN, [rcm, pk, Fp::from(value), psi])
 }
 
 const PAD_COMMITMENT_DOMAIN: &[u8; 16] = b"Tachyon-CmOutPad";
@@ -193,21 +168,7 @@ const PAD_COMMITMENT_DOMAIN: &[u8; 16] = b"Tachyon-CmOutPad";
 /// observer pair them off and recover the output count.
 #[must_use]
 pub fn pad_tachygram(rcm: Fp, pk: Fp, value: u64, psi: Fp) -> Fp {
-    *emulate(|driver| {
-        let rcm_element = Element::constant(driver, rcm);
-        let pk_element = Element::constant(driver, pk);
-        let value_element = Element::constant(driver, Fp::from(value));
-        let psi_element = Element::constant(driver, psi);
-        with_driver::pad_tachygram(
-            driver,
-            &rcm_element,
-            &pk_element,
-            &value_element,
-            &psi_element,
-        )
-    })
-    .value()
-    .take()
+    hash::<4>(PAD_COMMITMENT_DOMAIN, [rcm, pk, Fp::from(value), psi])
 }
 
 const NULLIFIER_MASTER_DOMAIN: &[u8; 16] = b"Tachyon-NfMaster";
@@ -221,13 +182,7 @@ const NULLIFIER_MASTER_DOMAIN: &[u8; 16] = b"Tachyon-NfMaster";
 /// $$
 #[must_use]
 pub fn nf_master(psi: Fp, nk: Fp) -> Fp {
-    *emulate(|driver| {
-        let psi_element = Element::constant(driver, psi);
-        let nk_element = Element::constant(driver, nk);
-        with_driver::nf_master(driver, &psi_element, &nk_element)
-    })
-    .value()
-    .take()
+    hash::<2>(NULLIFIER_MASTER_DOMAIN, [psi, nk])
 }
 
 const SPEND_ALPHA_DOMAIN: &[u8; 16] = b"Tachyon-Spend\0\0\0";
@@ -239,13 +194,7 @@ const SPEND_ALPHA_DOMAIN: &[u8; 16] = b"Tachyon-Spend\0\0\0";
 /// $$
 #[must_use]
 pub fn alpha_spend(theta: Fp, cm: Fp) -> Fp {
-    *emulate(|driver| {
-        let theta_element = Element::constant(driver, theta);
-        let cm_element = Element::constant(driver, cm);
-        with_driver::alpha_spend(driver, &theta_element, &cm_element)
-    })
-    .value()
-    .take()
+    hash::<2>(SPEND_ALPHA_DOMAIN, [theta, cm])
 }
 
 const OUTPUT_ALPHA_DOMAIN: &[u8; 16] = b"Tachyon-Output\0\0";
@@ -257,13 +206,7 @@ const OUTPUT_ALPHA_DOMAIN: &[u8; 16] = b"Tachyon-Output\0\0";
 /// $$
 #[must_use]
 pub fn alpha_output(theta: Fp, cm: Fp) -> Fp {
-    *emulate(|driver| {
-        let theta_element = Element::constant(driver, theta);
-        let cm_element = Element::constant(driver, cm);
-        with_driver::alpha_output(driver, &theta_element, &cm_element)
-    })
-    .value()
-    .take()
+    hash::<2>(OUTPUT_ALPHA_DOMAIN, [theta, cm])
 }
 
 const NULLIFIER_DOMAIN: &[u8; 16] = b"Tachyon-NfDerive";
@@ -277,12 +220,8 @@ const NULLIFIER_DOMAIN: &[u8; 16] = b"Tachyon-NfDerive";
 /// native and the element count is fixed at `RATE`, so this is unreachable.
 #[must_use]
 pub fn nullifier_group(mk: Fp, epoch_start: Fp) -> [Fp; PoseidonFp::RATE] {
-    emulate(|driver| {
-        let master_element = Element::constant(driver, mk);
-        let epoch_element = Element::constant(driver, epoch_start);
-        with_driver::nullifier_group(driver, &master_element, &epoch_element)
-    })
-    .map(|element| *element.value().take())
+    let (mut emulator, mut sponge) = tagged_sponge(NULLIFIER_DOMAIN, [mk, epoch_start]);
+    array::from_fn(|_| squeeze(&mut emulator, &mut sponge))
 }
 
 const ANCHOR_STAMP_DOMAIN: &[u8; 16] = b"Tachyon-AnchorSt";
@@ -296,19 +235,10 @@ const ANCHOR_STAMP_DOMAIN: &[u8; 16] = b"Tachyon-AnchorSt";
 #[must_use]
 #[expect(clippy::expect_used, reason = "a bridge hash is never the identity")]
 pub fn anchor_next_stamp(anchor_prev: Fp, epoch: Fp, stamp_hash: EpAffine) -> Fp {
-    let coordinates = <[Fp; 2]>::from(
-        stamp_hash
-            .coordinates()
-            .expect("bridge hash must not be the identity point"),
-    );
-    *emulate(|driver| {
-        let anchor_element = Element::constant(driver, anchor_prev);
-        let epoch_element = Element::constant(driver, epoch);
-        let bridge_hash = coordinates.map(|value| Element::constant(driver, value));
-        with_driver::anchor_next_stamp(driver, &anchor_element, &epoch_element, &bridge_hash)
-    })
-    .value()
-    .take()
+    let (x, y) = stamp_hash
+        .coordinates()
+        .expect("bridge hash must not be the identity point");
+    hash::<4>(ANCHOR_STAMP_DOMAIN, [anchor_prev, epoch, x, y])
 }
 
 const QR_BUCKET_DOMAIN: &[u8; 16] = b"Tachyon-QrBucket";
@@ -331,31 +261,22 @@ pub fn evidence_tree_leaf(
     bits: Fp,
     contents: EpAffine,
 ) -> Fp {
-    let coordinates = <[Fp; 2]>::from(
-        contents
-            .coordinates()
-            .expect("bridge hash must not be the identity point"),
-    );
-    *emulate(|driver| {
-        let epoch_element = Element::constant(driver, epoch);
-        let start_element = Element::constant(driver, anchor_start);
-        let next_element = Element::constant(driver, anchor_next);
-        let discriminant_element = Element::constant(driver, discriminant);
-        let depth_element = Element::constant(driver, depth);
-        let bits_element = Element::constant(driver, bits);
-        let bridge_hash = coordinates.map(|value| Element::constant(driver, value));
-        with_driver::evidence_tree_leaf(
-            driver,
-            &epoch_element,
-            &start_element,
-            &next_element,
-            &discriminant_element,
-            (&depth_element, &bits_element),
-            &bridge_hash,
-        )
-    })
-    .value()
-    .take()
+    let (contents_x, contents_y) = contents
+        .coordinates()
+        .expect("bridge hash must not be the identity point");
+    hash::<8>(
+        QR_BUCKET_DOMAIN,
+        [
+            epoch,
+            anchor_start,
+            anchor_next,
+            discriminant,
+            depth,
+            bits,
+            contents_x,
+            contents_y,
+        ],
+    )
 }
 
 /// Folds four subtree roots into their parent node of a evidence tree.
@@ -367,12 +288,7 @@ pub fn evidence_tree_leaf(
 /// $$
 #[must_use]
 pub fn evidence_tree_node(children: [Fp; EVIDENCE_TREE_ARITY]) -> Fp {
-    *emulate(|driver| {
-        let elements = children.map(|value| Element::constant(driver, value));
-        with_driver::evidence_tree_node(driver, &elements)
-    })
-    .value()
-    .take()
+    hash::<EVIDENCE_TREE_ARITY>(EVIDENCE_NODE_DOMAIN, children)
 }
 
 const ANCHOR_EPOCH_DOMAIN: &[u8; 16] = b"Tachyon-AnchorEp";
@@ -383,16 +299,10 @@ const ANCHOR_EPOCH_DOMAIN: &[u8; 16] = b"Tachyon-AnchorEp";
 /// anchor of the epoch before.
 #[must_use]
 pub fn anchor_next_epoch(anchor_prev: Fp, epoch: Fp) -> Fp {
-    *emulate(|driver| {
-        let anchor_element = Element::constant(driver, anchor_prev);
-        let epoch_element = Element::constant(driver, epoch);
-        with_driver::anchor_next_epoch(driver, &anchor_element, &epoch_element)
-    })
-    .value()
-    .take()
+    hash::<2>(ANCHOR_EPOCH_DOMAIN, [anchor_prev, epoch])
 }
 
-/// Protocol hash definitions shared by steps and the native emulator wrappers.
+/// Protocol hashes evaluated with a circuit driver.
 pub(crate) mod with_driver {
     use ragu_core::{PoseidonPermutation as _, Result, drivers::Driver, pasta::PoseidonFp};
     use ragu_primitives::Element;
@@ -401,7 +311,7 @@ pub(crate) mod with_driver {
         ACTION_DIGEST_DOMAIN, ANCHOR_EPOCH_DOMAIN, ANCHOR_STAMP_DOMAIN, EVIDENCE_NODE_DOMAIN,
         FEE_BLIND_DOMAIN, FEE_DIGEST_DOMAIN, NOTE_COMMITMENT_DOMAIN, NULLIFIER_DOMAIN,
         NULLIFIER_MASTER_DOMAIN, OUTPUT_ALPHA_DOMAIN, PAD_COMMITMENT_DOMAIN, PAYMENT_KEY_DOMAIN,
-        QR_BUCKET_DOMAIN, SPEND_ALPHA_DOMAIN, tagged_sponge,
+        QR_BUCKET_DOMAIN, SPEND_ALPHA_DOMAIN, tagged_sponge_with_driver as tagged_sponge,
     };
     use crate::{constants::EVIDENCE_TREE_ARITY, pasta::Fp};
 
