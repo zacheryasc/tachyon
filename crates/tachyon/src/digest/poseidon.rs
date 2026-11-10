@@ -311,7 +311,7 @@ pub(crate) mod with_driver {
         ACTION_DIGEST_DOMAIN, ANCHOR_EPOCH_DOMAIN, ANCHOR_STAMP_DOMAIN, EVIDENCE_NODE_DOMAIN,
         FEE_BLIND_DOMAIN, FEE_DIGEST_DOMAIN, NOTE_COMMITMENT_DOMAIN, NULLIFIER_DOMAIN,
         NULLIFIER_MASTER_DOMAIN, OUTPUT_ALPHA_DOMAIN, PAD_COMMITMENT_DOMAIN, PAYMENT_KEY_DOMAIN,
-        QR_BUCKET_DOMAIN, SPEND_ALPHA_DOMAIN, tagged_sponge_with_driver as tagged_sponge,
+        QR_BUCKET_DOMAIN, SPEND_ALPHA_DOMAIN, tagged_sponge_with_driver,
     };
     use crate::{constants::EVIDENCE_TREE_ARITY, pasta::Fp};
 
@@ -321,7 +321,7 @@ pub(crate) mod with_driver {
         psi: &Element<'dr, D>,
         rcm: &Element<'dr, D>,
     ) -> Result<Element<'dr, D>> {
-        tagged_sponge(dr, FEE_BLIND_DOMAIN, [pk, psi, rcm])?.squeeze(dr)
+        tagged_sponge_with_driver(dr, FEE_BLIND_DOMAIN, [pk, psi, rcm])?.squeeze(dr)
     }
 
     pub(crate) fn fee_digest<'dr, D: Driver<'dr, F = Fp>>(
@@ -329,7 +329,7 @@ pub(crate) mod with_driver {
         cv: (&Element<'dr, D>, &Element<'dr, D>),
         fee: &Element<'dr, D>,
     ) -> Result<Element<'dr, D>> {
-        tagged_sponge(dr, FEE_DIGEST_DOMAIN, [cv.0, cv.1, fee])?.squeeze(dr)
+        tagged_sponge_with_driver(dr, FEE_DIGEST_DOMAIN, [cv.0, cv.1, fee])?.squeeze(dr)
     }
 
     pub(crate) fn action_digest<'dr, D: Driver<'dr, F = Fp>>(
@@ -337,7 +337,7 @@ pub(crate) mod with_driver {
         cv: (&Element<'dr, D>, &Element<'dr, D>),
         rk: (&Element<'dr, D>, &Element<'dr, D>),
     ) -> Result<Element<'dr, D>> {
-        tagged_sponge(dr, ACTION_DIGEST_DOMAIN, [cv.0, cv.1, rk.0, rk.1])?.squeeze(dr)
+        tagged_sponge_with_driver(dr, ACTION_DIGEST_DOMAIN, [cv.0, cv.1, rk.0, rk.1])?.squeeze(dr)
     }
 
     pub(crate) fn payment_key<'dr, D: Driver<'dr, F = Fp>>(
@@ -345,7 +345,7 @@ pub(crate) mod with_driver {
         ak: (&Element<'dr, D>, &Element<'dr, D>),
         nk: &Element<'dr, D>,
     ) -> Result<Element<'dr, D>> {
-        tagged_sponge(dr, PAYMENT_KEY_DOMAIN, [ak.0, ak.1, nk])?.squeeze(dr)
+        tagged_sponge_with_driver(dr, PAYMENT_KEY_DOMAIN, [ak.0, ak.1, nk])?.squeeze(dr)
     }
 
     pub(crate) fn note_commitment<'dr, D: Driver<'dr, F = Fp>>(
@@ -355,7 +355,7 @@ pub(crate) mod with_driver {
         value: &Element<'dr, D>,
         psi: &Element<'dr, D>,
     ) -> Result<Element<'dr, D>> {
-        tagged_sponge(dr, NOTE_COMMITMENT_DOMAIN, [rcm, pk, value, psi])?.squeeze(dr)
+        tagged_sponge_with_driver(dr, NOTE_COMMITMENT_DOMAIN, [rcm, pk, value, psi])?.squeeze(dr)
     }
 
     pub(crate) fn pad_tachygram<'dr, D: Driver<'dr, F = Fp>>(
@@ -365,7 +365,7 @@ pub(crate) mod with_driver {
         value: &Element<'dr, D>,
         psi: &Element<'dr, D>,
     ) -> Result<Element<'dr, D>> {
-        tagged_sponge(dr, PAD_COMMITMENT_DOMAIN, [rcm, pk, value, psi])?.squeeze(dr)
+        tagged_sponge_with_driver(dr, PAD_COMMITMENT_DOMAIN, [rcm, pk, value, psi])?.squeeze(dr)
     }
 
     pub(crate) fn nf_master<'dr, D: Driver<'dr, F = Fp>>(
@@ -373,7 +373,7 @@ pub(crate) mod with_driver {
         psi: &Element<'dr, D>,
         nk: &Element<'dr, D>,
     ) -> Result<Element<'dr, D>> {
-        tagged_sponge(dr, NULLIFIER_MASTER_DOMAIN, [psi, nk])?.squeeze(dr)
+        tagged_sponge_with_driver(dr, NULLIFIER_MASTER_DOMAIN, [psi, nk])?.squeeze(dr)
     }
 
     pub(crate) fn alpha_spend<'dr, D: Driver<'dr, F = Fp>>(
@@ -381,7 +381,7 @@ pub(crate) mod with_driver {
         theta: &Element<'dr, D>,
         cm: &Element<'dr, D>,
     ) -> Result<Element<'dr, D>> {
-        tagged_sponge(dr, SPEND_ALPHA_DOMAIN, [theta, cm])?.squeeze(dr)
+        tagged_sponge_with_driver(dr, SPEND_ALPHA_DOMAIN, [theta, cm])?.squeeze(dr)
     }
 
     pub(crate) fn alpha_output<'dr, D: Driver<'dr, F = Fp>>(
@@ -389,7 +389,7 @@ pub(crate) mod with_driver {
         theta: &Element<'dr, D>,
         cm: &Element<'dr, D>,
     ) -> Result<Element<'dr, D>> {
-        tagged_sponge(dr, OUTPUT_ALPHA_DOMAIN, [theta, cm])?.squeeze(dr)
+        tagged_sponge_with_driver(dr, OUTPUT_ALPHA_DOMAIN, [theta, cm])?.squeeze(dr)
     }
 
     pub(crate) fn nullifier_group<'dr, D: Driver<'dr, F = Fp>>(
@@ -397,7 +397,7 @@ pub(crate) mod with_driver {
         master: &Element<'dr, D>,
         epoch_start: &Element<'dr, D>,
     ) -> Result<[Element<'dr, D>; PoseidonFp::RATE]> {
-        let mut sponge = tagged_sponge(dr, NULLIFIER_DOMAIN, [master, epoch_start])?;
+        let mut sponge = tagged_sponge_with_driver(dr, NULLIFIER_DOMAIN, [master, epoch_start])?;
         Ok([
             sponge.squeeze(dr)?,
             sponge.squeeze(dr)?,
@@ -412,7 +412,7 @@ pub(crate) mod with_driver {
         epoch: &Element<'dr, D>,
         bridge_hash: &[Element<'dr, D>; 2],
     ) -> Result<Element<'dr, D>> {
-        tagged_sponge(
+        tagged_sponge_with_driver(
             dr,
             ANCHOR_STAMP_DOMAIN,
             [anchor_prev, epoch, &bridge_hash[0], &bridge_hash[1]],
@@ -425,7 +425,7 @@ pub(crate) mod with_driver {
         anchor_prev: &Element<'dr, D>,
         epoch: &Element<'dr, D>,
     ) -> Result<Element<'dr, D>> {
-        tagged_sponge(dr, ANCHOR_EPOCH_DOMAIN, [anchor_prev, epoch])?.squeeze(dr)
+        tagged_sponge_with_driver(dr, ANCHOR_EPOCH_DOMAIN, [anchor_prev, epoch])?.squeeze(dr)
     }
 
     pub(crate) fn evidence_tree_leaf<'dr, D: Driver<'dr, F = Fp>>(
@@ -437,7 +437,7 @@ pub(crate) mod with_driver {
         profile: (&Element<'dr, D>, &Element<'dr, D>),
         bridge_hash: &[Element<'dr, D>; 2],
     ) -> Result<Element<'dr, D>> {
-        tagged_sponge(
+        tagged_sponge_with_driver(
             dr,
             QR_BUCKET_DOMAIN,
             [
@@ -458,6 +458,6 @@ pub(crate) mod with_driver {
         dr: &mut D,
         children: &[Element<'dr, D>; EVIDENCE_TREE_ARITY],
     ) -> Result<Element<'dr, D>> {
-        tagged_sponge(dr, EVIDENCE_NODE_DOMAIN, children.each_ref())?.squeeze(dr)
+        tagged_sponge_with_driver(dr, EVIDENCE_NODE_DOMAIN, children.each_ref())?.squeeze(dr)
     }
 }

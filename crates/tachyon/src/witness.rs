@@ -169,7 +169,7 @@ pub fn anchor_span_seed(
 
 /// Prepare the witness for [`AnchorSpanFuse`]: `(combined,)`.
 ///
-/// `left_members` and `right_members` are the member polynomials of the two
+/// `left_members` and `right_members` are the members polynomials of the two
 /// halves.
 #[must_use]
 pub fn anchor_span_fuse(

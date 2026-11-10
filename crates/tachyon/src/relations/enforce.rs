@@ -26,7 +26,7 @@
 //! operands it covers and any relation-specific nuance.
 //!
 //! Implementation invariant: the eval fed to each identity check is the same
-//! eval emitted in that operand's opening claim (one `query` call at ζ per
+//! eval emitted in that operand's opening claim (one `query` call per
 //! operand). A refactor that recomputed or separately witnessed the evals could
 //! let the checked value diverge from the opened one and break soundness.
 
