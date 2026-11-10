@@ -72,7 +72,7 @@ application on that worker because the application is not `Sync`.
 Requires Rust stable (1.85+) and nightly for formatting/linting.
 
 ```sh
-just test    # cargo test --workspace --features test-epoch-size
+just test    # unit and doc tests, then integration tests with --release
 just lint    # cargo +nightly clippy --workspace --all-targets --features test-epoch-size
 just fmt     # cargo +nightly fmt --all
 just doc     # cargo doc --workspace --no-deps

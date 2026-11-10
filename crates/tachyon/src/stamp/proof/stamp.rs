@@ -898,7 +898,7 @@ impl Step<Pasta> for FeeFuse {
             &mut (),
             witness.as_ref().map(|data| Fp::from(data.0.rcm)),
         )?;
-        let blind = poseidon::with_driver::fee_blind(dr, &pk, &psi, &rcm)?;
+        let blind = poseidon::with_driver::feemax_blind(dr, &pk, &psi, &rcm)?;
         #[expect(clippy::indexing_slicing, reason = "framework enforces NUM_STAGED = 5")]
         for (index, actual) in [&pk, &psi, &rcm, &maximum, &fee].into_iter().enumerate() {
             actual.enforce_equal(dr, &oracles.staged()[index])?;
@@ -1035,7 +1035,7 @@ impl Step<Pasta> for FeeSeed {
             &mut (),
             witness.as_ref().map(|data| Fp::from(data.0.rcm)),
         )?;
-        let blind = poseidon::with_driver::fee_blind(dr, &pk, &psi, &rcm)?;
+        let blind = poseidon::with_driver::feemax_blind(dr, &pk, &psi, &rcm)?;
         #[expect(clippy::indexing_slicing, reason = "framework enforces NUM_STAGED = 3")]
         for (index, actual) in [&pk, &psi, &rcm].into_iter().enumerate() {
             actual.enforce_equal(dr, &oracles.staged()[index])?;
