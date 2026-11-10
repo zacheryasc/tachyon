@@ -1779,7 +1779,7 @@ fn qr_unspent_init_accepts_buckets_at_every_depth() {
         &pool,
         (Anchor::default(), final_anchor),
         discriminant,
-        24,
+        32,
         0,
     );
     assert_eq!(roots.len(), 1);
