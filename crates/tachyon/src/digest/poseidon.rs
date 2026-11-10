@@ -65,16 +65,16 @@ fn tagged_sponge<'dr, D: Driver<'dr, F = Fp>, const L: usize>(
 
 const FEE_BLIND_DOMAIN: &[u8; 16] = b"Tachyon-FeeBlind";
 
-/// A max fee note's value commitment blind,
-/// $r = \mathsf{Poseidon}_\texttt{Tachyon-FeeBlind}(\mathsf{pk}, \psi,
+/// The feemax blind, the trapdoor of $\mathsf{cv}_\mathsf{feemax}$,
+/// $r =\mathsf{Poseidon}_\texttt{Tachyon-FeeBlind}(\mathsf{pk}, \psi,
 /// \mathsf{rcm})$.
 #[must_use]
-pub fn fee_blind(pk: Fp, psi: Fp, rcm: Fp) -> Fp {
+pub fn feemax_blind(pk: Fp, psi: Fp, rcm: Fp) -> Fp {
     *emulate(|driver| {
         let pk_element = Element::constant(driver, pk);
         let psi_element = Element::constant(driver, psi);
         let rcm_element = Element::constant(driver, rcm);
-        with_driver::fee_blind(driver, &pk_element, &psi_element, &rcm_element)
+        with_driver::feemax_blind(driver, &pk_element, &psi_element, &rcm_element)
     })
     .value()
     .take()
@@ -83,13 +83,13 @@ pub fn fee_blind(pk: Fp, psi: Fp, rcm: Fp) -> Fp {
 const FEE_DIGEST_DOMAIN: &[u8; 16] = b"Tachyon-FeeDg\0\0\0";
 
 /// A fee digest, $d_\mathsf{fee} = \mathsf{Poseidon}_\texttt{Tachyon-FeeDg}(
-/// x(\mathsf{cv}_\mathsf{maxfee}), y(\mathsf{cv}_\mathsf{maxfee}),
+/// x(\mathsf{cv}_\mathsf{feemax}), y(\mathsf{cv}_\mathsf{feemax}),
 /// \mathsf{fee})$.
 #[must_use]
-pub fn fee_digest(cv_max_fee: (Fp, Fp), fee: u64) -> Fp {
+pub fn fee_digest(cv_feemax: (Fp, Fp), fee: u64) -> Fp {
     *emulate(|driver| {
-        let x_element = Element::constant(driver, cv_max_fee.0);
-        let y_element = Element::constant(driver, cv_max_fee.1);
+        let x_element = Element::constant(driver, cv_feemax.0);
+        let y_element = Element::constant(driver, cv_feemax.1);
         let fee_element = Element::constant(driver, Fp::from(fee));
         with_driver::fee_digest(driver, (&x_element, &y_element), &fee_element)
     })
@@ -372,7 +372,7 @@ pub(crate) mod with_driver {
     };
     use crate::{constants::EVIDENCE_TREE_ARITY, pasta::Fp};
 
-    pub(crate) fn fee_blind<'dr, D: Driver<'dr, F = Fp>>(
+    pub(crate) fn feemax_blind<'dr, D: Driver<'dr, F = Fp>>(
         dr: &mut D,
         pk: &Element<'dr, D>,
         psi: &Element<'dr, D>,
