@@ -647,6 +647,8 @@ impl Step<Pasta> for QrIntakeMerge {
 
 /// Partition an intake's members at its own discriminant.
 ///
+/// An empty intake is not split.
+///
 /// # Soundness
 ///
 /// The product pins the two sides to a factorization of the contents.
@@ -700,14 +702,26 @@ impl Step<Pasta> for QrIntakeSplit {
         let left_encoded = Encoded::<D, Self::Left, HEADER_SIZE>::new(dr, &mut (), left.clone())?;
         let right_encoded =
             Encoded::<D, Self::Right, HEADER_SIZE>::new(dr, &mut (), right.clone())?;
-        enforce_poly_product(
-            dr,
-            oracles,
-            &Slot::output(0),
-            &Slot::output(1),
-            &Slot::left(0),
-            "QrIntakeSplit: the sides do not partition the contents",
-        )?;
+        let z = oracles.zeta().clone();
+        let residue_at_z = oracles.query(dr, Slot::output(0), &z)?;
+        let non_residue_at_z = oracles.query(dr, Slot::output(1), &z)?;
+        let contents_at_z = oracles.query(dr, Slot::left(0), &z)?;
+        let product = residue_at_z.mul(dr, &non_residue_at_z)?;
+        contents_at_z.enforce_equal(dr, &product).map_err(|_err| {
+            ragu_core::Error::InvalidWitness(
+                "QrIntakeSplit: the sides do not partition the contents".into(),
+            )
+        })?;
+        // An empty intake's contents are the constant one.
+        let one = Element::constant(dr, Fp::ONE);
+        contents_at_z
+            .sub(dr, &one)
+            .enforce_nonzero(dr)
+            .map_err(|_err| {
+                ragu_core::Error::InvalidWitness(
+                    "QrIntakeSplit: an empty intake cannot be split".into(),
+                )
+            })?;
 
         let non_residue_hash = oracles.bridge_hash().each_ref().map(Element::value);
         let output = D::try_just(|| {
@@ -758,7 +772,8 @@ impl Step<Pasta> for QrIntakeSplit {
 /// Fix a split's hint commitments and check its exceptional-value assignment.
 ///
 /// The non-residue contents open once at $-R$; the two hint polynomials supply
-/// output commitments. [`QrSideDescend`] checks their class identity.
+/// output commitments. [`QrSideDescend`] checks their class identity and
+/// rejects a split whose two sides are the same set.
 #[derive(Debug)]
 pub struct QrSideSelect;
 
@@ -840,7 +855,7 @@ impl Step<Pasta> for QrSideSelect {
 /// at the sibling's class $c$ holds only if every root of $s$ takes that
 /// side at $R$, since each root leaves $u(x)^2 = c \cdot (x + R)$. With the
 /// split's product, every member of the extracted class is then in the
-/// child.
+/// child. A split whose two sides are the same set is rejected.
 ///
 /// # Soundness
 ///
@@ -989,6 +1004,9 @@ impl Step<Pasta> for QrSideDescend {
         let non_residue_at_z = oracles.query(dr, Slot::left(1), &z)?;
         let residue_at_z = oracles.query(dr, Slot::left(0), &z)?;
         let delta = non_residue_at_z.sub(dr, &residue_at_z);
+        delta.clone().enforce_nonzero(dr).map_err(|_err| {
+            ragu_core::Error::InvalidWitness("QrSideDescend: the two sides are the same set".into())
+        })?;
         let selected_delta = bit.element().mul(dr, &delta)?;
         let sibling_at_z = residue_at_z.add(dr, &selected_delta);
         let selected_at_z = non_residue_at_z.sub(dr, &selected_delta);
