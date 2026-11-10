@@ -49,7 +49,13 @@ fn enforce_stamp_domain<'dr, D: Driver<'dr, F = pasta::Fp>>(
     epoch: &Element<'dr, D>,
     bridge_hash: &[Element<'dr, D>; 2],
 ) -> ragu_core::Result<()> {
-    let (low, high) = EMPTY_STAMP_BRIDGE_HASH.coordinates();
+    #[expect(
+        clippy::expect_used,
+        reason = "a bridge hash is the identity only under a discrete-log relation between its generators"
+    )]
+    let (low, high) = pasta::EpAffine::from(*EMPTY_STAMP_BRIDGE_HASH)
+        .coordinates()
+        .expect("constant-one bridge hash is finite");
     let low_element = Element::constant(dr, low);
     let high_element = Element::constant(dr, high);
     let equal_low = bridge_hash[0].is_equal(dr, &mut (), &low_element)?;

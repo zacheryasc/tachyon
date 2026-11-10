@@ -113,24 +113,24 @@ const ACTION_DIGEST_DOMAIN: &[u8; 16] = b"Tachyon-ActionDg";
 ///
 /// Panics if `cv` or `rk` is the identity.
 #[must_use]
+#[expect(
+    clippy::similar_names,
+    reason = "x and y coordinate elements of each point"
+)]
 pub fn action_digest(cv: EpAffine, rk: EpAffine) -> Fp {
     #[expect(clippy::expect_used, reason = "callers reject the identity")]
     let (cv_x, cv_y) = cv.coordinates().expect("cv must not be the identity");
     #[expect(clippy::expect_used, reason = "callers reject the identity")]
     let (rk_x, rk_y) = rk.coordinates().expect("rk must not be the identity");
     *emulate(|driver| {
-        let cv_elements = (
-            Element::constant(driver, cv_x),
-            Element::constant(driver, cv_y),
-        );
-        let rk_elements = (
-            Element::constant(driver, rk_x),
-            Element::constant(driver, rk_y),
-        );
+        let cv_x_element = Element::constant(driver, cv_x);
+        let cv_y_element = Element::constant(driver, cv_y);
+        let rk_x_element = Element::constant(driver, rk_x);
+        let rk_y_element = Element::constant(driver, rk_y);
         with_driver::action_digest(
             driver,
-            (&cv_elements.0, &cv_elements.1),
-            (&rk_elements.0, &rk_elements.1),
+            (&cv_x_element, &cv_y_element),
+            (&rk_x_element, &rk_y_element),
         )
     })
     .value()

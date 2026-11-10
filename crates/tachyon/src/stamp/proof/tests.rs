@@ -15,8 +15,8 @@ fn native_bridge_hash_matches_application() {
     let prepared = *EMPTY_STAMP_BRIDGE_HASH;
     let mut counter = Emulator::counter();
     let epoch = Element::constant(&mut counter, Fp::ZERO);
-    let hash =
-        <[Fp; 2]>::from(prepared.coordinates()).map(|value| Element::constant(&mut counter, value));
+    let hash = <[Fp; 2]>::from(EpAffine::from(prepared).coordinates().unwrap())
+        .map(|value| Element::constant(&mut counter, value));
     enforce_stamp_domain(&mut counter, &epoch, &hash).unwrap();
 
     let application = new_application().unwrap();

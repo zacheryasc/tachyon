@@ -35,7 +35,7 @@ use ragu_core::{
     pasta::Pasta,
 };
 use ragu_primitives::{Boolean, Element, GadgetExt as _, allocator::Allocator, io::Write};
-use udon::field::Field as _;
+use udon::{curve::Affine as _, field::Field as _};
 
 use super::{
     pool::{ArbitraryUnspent, ArbitraryUnspentOutput},
@@ -46,7 +46,7 @@ use crate::{
     collections::qr::QUADRATIC_NON_RESIDUE,
     constants::EPOCH_MAX,
     digest::poseidon,
-    pasta::Fp,
+    pasta::{EpAffine, Fp},
     primitives::{
         Anchor, EpochIndex, NfSeqPoly, QrClassRoot, QrDiscriminant, QrInterpolantPoly, QrProfile,
         QrQuotientPoly, Tachygram, TachygramSetBridge, TachygramSetPoly,
@@ -165,6 +165,15 @@ impl Header<Fp> for QrIntakeSides {
         allocator: &mut A,
         witness: DriverValue<D, Self::Data>,
     ) -> ragu_core::Result<Bound<'dr, D, Self::Output>> {
+        #[expect(
+            clippy::expect_used,
+            reason = "a bridge hash is the identity only under a discrete-log relation between its generators"
+        )]
+        let non_residue_hash = witness.as_ref().map(|fields| {
+            EpAffine::from(fields.5)
+                .coordinates()
+                .expect("bridge hash is not the identity")
+        });
         Ok(QrIntakeSidesOutput {
             epoch: Element::alloc(
                 dr,
@@ -204,12 +213,12 @@ impl Header<Fp> for QrIntakeSides {
                 Element::alloc(
                     dr,
                     allocator,
-                    witness.as_ref().map(|fields| fields.5.coordinates().0),
+                    non_residue_hash.as_ref().map(|coordinates| coordinates.0),
                 )?,
                 Element::alloc(
                     dr,
                     allocator,
-                    witness.as_ref().map(|fields| fields.5.coordinates().1),
+                    non_residue_hash.as_ref().map(|coordinates| coordinates.1),
                 )?,
             ],
         })
@@ -250,7 +259,7 @@ impl Step<Pasta> for QrSummaryIntake {
     type Left = Summary;
     type Output = QrIntake;
     type Right = ();
-    /// `(discriminant,)`
+    /// `(discriminant)`
     type Witness<'source> = (QrDiscriminant,);
 
     const INDEX: Index = Index::new(15);
@@ -705,6 +714,17 @@ impl Step<Pasta> for QrIntakeSplit {
             let (epoch, anchor_prev, anchor_end, discriminant, profile) = left.take();
             let () = right.take();
             let [first, second] = non_residue_hash;
+            let bridge_hash =
+                EpAffine::from_xy(*first.take(), *second.take()).ok_or_else(|| {
+                    ragu_core::Error::InvalidWitness(
+                        "QrIntakeSplit: bridge hash is not on the curve".into(),
+                    )
+                })?;
+            if bridge_hash.is_identity() {
+                return Err(ragu_core::Error::InvalidWitness(
+                    "QrIntakeSplit: bridge hash is the identity".into(),
+                ));
+            }
             Ok((
                 (
                     epoch,
@@ -712,7 +732,7 @@ impl Step<Pasta> for QrIntakeSplit {
                     anchor_end,
                     discriminant,
                     profile,
-                    TachygramSetBridge::from_xy(*first.take(), *second.take())?,
+                    TachygramSetBridge::from(bridge_hash),
                 ),
                 (),
             ))
@@ -1062,6 +1082,15 @@ impl Header<Fp> for QrBucket {
         allocator: &mut A,
         witness: DriverValue<D, Self::Data>,
     ) -> ragu_core::Result<Bound<'dr, D, Self::Output>> {
+        #[expect(
+            clippy::expect_used,
+            reason = "a bridge hash is the identity only under a discrete-log relation between its generators"
+        )]
+        let contents_hash = witness.as_ref().map(|fields| {
+            EpAffine::from(fields.5)
+                .coordinates()
+                .expect("bridge hash is not the identity")
+        });
         Ok(QrBucketOutput {
             epoch: Element::alloc(
                 dr,
@@ -1101,12 +1130,12 @@ impl Header<Fp> for QrBucket {
                 Element::alloc(
                     dr,
                     allocator,
-                    witness.as_ref().map(|fields| fields.5.coordinates().0),
+                    contents_hash.as_ref().map(|coordinates| coordinates.0),
                 )?,
                 Element::alloc(
                     dr,
                     allocator,
-                    witness.as_ref().map(|fields| fields.5.coordinates().1),
+                    contents_hash.as_ref().map(|coordinates| coordinates.1),
                 )?,
             ],
         })
@@ -1155,7 +1184,7 @@ impl Step<Pasta> for QrBucketSeal {
     type Left = QrIntake;
     type Output = QrBucket;
     type Right = ();
-    /// `(anchor_final_prev,)`
+    /// `(anchor_final_prev)`
     type Witness<'source> = (Anchor,);
 
     const INDEX: Index = Index::new(20);
@@ -1211,6 +1240,16 @@ impl Step<Pasta> for QrBucketSeal {
                 .bridge_hash()
                 .clone()
                 .map(|value| *value.value().take());
+            let contents_hash = EpAffine::from_xy(hash_x, hash_y).ok_or_else(|| {
+                ragu_core::Error::InvalidWitness(
+                    "QrBucketSeal: bridge hash is not on the curve".into(),
+                )
+            })?;
+            if contents_hash.is_identity() {
+                return Err(ragu_core::Error::InvalidWitness(
+                    "QrBucketSeal: bridge hash is the identity".into(),
+                ));
+            }
 
             Ok((
                 (
@@ -1219,7 +1258,7 @@ impl Step<Pasta> for QrBucketSeal {
                     Anchor::from(*crossing.value().take()),
                     discriminant,
                     profile,
-                    TachygramSetBridge::from_xy(hash_x, hash_y)?,
+                    TachygramSetBridge::from(contents_hash),
                 ),
                 (),
             ))
