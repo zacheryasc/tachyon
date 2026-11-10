@@ -35,7 +35,7 @@ use ragu_primitives::{ENDOSCALAR_BITS, ENDOSCALAR_PRODUCTS, Element};
 use udon::curve::{Affine, Projective as _};
 
 use crate::{
-    constants::EPOCH_MAX, pasta, primitives::TachygramSetBridge, relations::arithmetic::bounded,
+    constants::EPOCH_MAX, gadgets::arithmetic::bounded, pasta, primitives::TachygramSetBridge,
 };
 
 /// Prepares the constant-one commitment's bridge hash without an application.

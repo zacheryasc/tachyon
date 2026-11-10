@@ -46,15 +46,13 @@ use crate::{
     collections::qr::QUADRATIC_NON_RESIDUE,
     constants::EPOCH_MAX,
     digest::poseidon,
+    gadgets::arithmetic as circuit,
     pasta::{EpAffine, Fp},
     primitives::{
         Anchor, EpochIndex, NfSeqPoly, QrClassRoot, QrDiscriminant, QrInterpolantPoly, QrProfile,
         QrQuotientPoly, Tachygram, TachygramSetBridge, TachygramSetPoly,
     },
-    relations::{
-        arithmetic as circuit,
-        enforce::{enforce_poly_equal, enforce_poly_product, indexed_member_factor},
-    },
+    relations::enforce::{enforce_poly_equal, enforce_poly_product, indexed_member_factor},
 };
 
 /// Tachygrams under routing, complete for `profile` over the covered span.

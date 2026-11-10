@@ -28,15 +28,13 @@ use udon::{curve::Affine as _, field::Field as _};
 use crate::{
     constants::{EPOCH_MAX, MAX_MONEY},
     digest::poseidon,
+    gadgets::{arithmetic as circuit, curve},
     keys::{NoteMasterKey, PaymentKey, ProofAuthorizingKey},
     note::{self, Note},
     nullifier::{self, NF_DERIVATION_WIDTH},
     pasta::{EpAffine, Fp},
     primitives::{EpochIndex, NfSeqPoly},
-    relations::{
-        arithmetic as circuit, curve,
-        enforce::{enforce_poly_product, indexed_member_factor},
-    },
+    relations::enforce::{enforce_poly_product, indexed_member_factor},
     value,
 };
 

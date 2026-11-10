@@ -19,9 +19,9 @@ use crate::{
     Tachygram,
     constants::MAX_MONEY,
     digest::poseidon,
+    gadgets::{arithmetic as circuit, curve},
     note::Note,
     pasta::{EpAffine, Fp, Fq},
-    relations::{arithmetic as circuit, curve},
     value,
 };
 

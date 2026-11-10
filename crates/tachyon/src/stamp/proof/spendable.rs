@@ -28,10 +28,10 @@ use udon::field::Field as _;
 use super::{delegation::NoteNullifiers, pool::NoteUnspent, qr::QrBucket};
 use crate::{
     digest::poseidon,
+    gadgets::arithmetic as circuit,
     note,
     pasta::Fp,
     primitives::{Anchor, EpochIndex, TachygramSetPoly},
-    relations::arithmetic as circuit,
 };
 
 /// Wallet's spendable position, certified up to this point in every

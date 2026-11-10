@@ -43,16 +43,14 @@ use super::{
 };
 use crate::{
     digest::poseidon,
+    gadgets::arithmetic as circuit,
     note::{self},
     pasta::Fp,
     primitives::{
         Anchor, AnchorSetPoly, EpochIndex, NfSeqPoly, QrClassRoot, QrProfile, Tachygram,
         TachygramSetPoly,
     },
-    relations::{
-        arithmetic as circuit,
-        enforce::{enforce_poly_product, enforce_poly_roots, indexed_member_factor},
-    },
+    relations::enforce::{enforce_poly_product, enforce_poly_roots, indexed_member_factor},
 };
 
 /// Multi-stamp / multi-epoch nf-exclusion proof over arbitrary values.

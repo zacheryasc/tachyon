@@ -3,7 +3,7 @@ use core::array;
 use ragu_primitives::{Element, Simulator};
 
 use super::*;
-use crate::{constants::MAX_MONEY, relations::arithmetic};
+use crate::{constants::MAX_MONEY, gadgets::arithmetic};
 
 fn check_counts(before: (usize, usize), dr: &Simulator<Fp>, expected: (usize, usize)) {
     assert_eq!(

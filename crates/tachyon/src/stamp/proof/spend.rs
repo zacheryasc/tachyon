@@ -19,12 +19,12 @@ use super::{delegation::NoteSecret, spendable::NoteSpendable};
 use crate::{
     constants::{EPOCH_MAX, MAX_MONEY},
     digest::poseidon,
+    gadgets::{arithmetic as circuit, curve},
     keys::PaymentKey,
     note,
     nullifier::Nullifier,
     pasta::{EpAffine, Fp, Fq},
     primitives::Anchor,
-    relations::{arithmetic as circuit, curve},
     value,
 };
 

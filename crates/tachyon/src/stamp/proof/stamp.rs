@@ -24,14 +24,12 @@ use crate::{
     constants::{MAX_MONEY, orchard},
     digest::poseidon,
     entropy::ActionEntropy,
+    gadgets::{arithmetic as circuit, curve},
     keys::{ProofAuthorizingKey, private},
     note::{self, Note},
     pasta::{EpAffine, Fp, Fq},
     primitives::{ActionDigest, Anchor, TachygramSetBridge, TachygramSetCommit, effect},
-    relations::{
-        arithmetic as circuit, curve,
-        enforce::{enforce_poly_equal, enforce_poly_product, enforce_poly_roots},
-    },
+    relations::enforce::{enforce_poly_equal, enforce_poly_product, enforce_poly_roots},
     value,
 };
 
