@@ -3,7 +3,10 @@ use core::assert_matches;
 use ragu_core::{Error, drivers::emulator::Emulator, pasta::Pasta};
 use ragu_pcd::profile::{Profile, ProfiledCycle};
 use ragu_primitives::Element;
-use udon::{curve::Projective as _, field::Field as _};
+use udon::{
+    curve::{Affine as _, Projective as _},
+    field::Field as _,
+};
 
 use super::{
     super::{Tachygram, TachygramSetPoly},
