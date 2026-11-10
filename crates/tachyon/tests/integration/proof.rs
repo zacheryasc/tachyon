@@ -226,6 +226,7 @@ fn anchor_span_holds_the_anchors_its_folds_produce() {
         span.commitments()[0],
         Eq::from(AnchorSetPoly::from_iter(members).commit()).to_affine()
     );
+    assert!(application.verify_uncompressed(&span, &mut *rng).unwrap());
 }
 
 #[test]
@@ -409,7 +410,7 @@ fn step_accepts_zero_value_note() {
         .unwrap();
     let theta = ActionEntropy::random(rng);
     let anchor = Anchor::random(rng);
-    application
+    let (output_action, ()) = application
         .fuse(
             rng,
             stamp::OutputAction,
@@ -418,13 +419,18 @@ fn step_accepts_zero_value_note() {
             application.bootstrap_proof().clone().carry::<()>(()),
         )
         .unwrap();
+    assert!(
+        application
+            .verify_uncompressed(&output_action, &mut *rng)
+            .unwrap()
+    );
 
     let mut pool = PoolSim::genesis_with(random_block(rng, 1, 1));
     let zero_spend = user.random_note(0);
     let height = mine_cm_block(rng, &mut pool, zero_spend.commitment());
     let spendable_pcd = user.spendable_init(application, rng, &zero_spend, &pool, height);
     let spend_bind = honest_spend_bind(application, rng, &user, &zero_spend, spendable_pcd);
-    application
+    let (spend_action, ()) = application
         .fuse(
             rng,
             stamp::SpendAction,
@@ -433,6 +439,11 @@ fn step_accepts_zero_value_note() {
             application.bootstrap_proof().clone().carry::<()>(()),
         )
         .unwrap();
+    assert!(
+        application
+            .verify_uncompressed(&spend_action, &mut *rng)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -556,6 +567,7 @@ fn lift_crosses_a_stampless_epoch() {
     let lifted = user.lift(application, rng, spendable, arbitrary, &note);
     assert_eq!(lifted.data().1, epoch3);
     assert_eq!(lifted.data().2, pool.block(epoch3.first_block()).prev);
+    assert!(application.verify_uncompressed(&lifted, &mut *rng).unwrap());
 }
 
 #[test]
@@ -629,6 +641,7 @@ fn unspent_bind_window_may_end_at_the_final_epoch() {
         complement_seq.commit(),
         NfSeqPoly::new(epoch_end, &[mk.derive_nullifier(epoch_end)]).commit()
     );
+    assert!(application.verify_uncompressed(&range, &mut *rng).unwrap());
 }
 
 #[test]
@@ -863,6 +876,7 @@ fn note_seed_derives_the_payment_key_from_pak() {
         Fp::from(stranger.pak.derive_payment_key())
     );
     assert_ne!(cm, note.commitment());
+    assert!(application.verify_uncompressed(&secret, &mut *rng).unwrap());
 }
 
 #[test]
@@ -1000,6 +1014,11 @@ fn spend_bind_derives_a_pair_across_a_group_boundary() {
             mk.derive_nullifier(EpochIndex::new(4)),
             anchor,
         )
+    );
+    assert!(
+        application
+            .verify_uncompressed(&bind_pcd, &mut *rng)
+            .unwrap()
     );
 }
 
@@ -1229,5 +1248,10 @@ fn multi_window_span_binds_once() {
     assert_eq!(
         (unspent.data().2, unspent.data().3),
         (EpochIndex::new(0), EpochIndex::new(last_epoch))
+    );
+    assert!(
+        application
+            .verify_uncompressed(&unspent, &mut *rng)
+            .unwrap()
     );
 }

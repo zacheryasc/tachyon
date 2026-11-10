@@ -127,6 +127,11 @@ fn evidence_tree_replays_the_bucket_each_leaf_holds() {
     for (leaf, bucket) in tree.leaves.iter().zip(&expected) {
         let replayed = open_evidence_tree(application, rng, tree.pcd.clone(), leaf);
         assert_eq!(*replayed.pcd.data(), *bucket);
+        assert!(
+            application
+                .verify_uncompressed(&replayed.pcd, &mut *rng)
+                .unwrap()
+        );
     }
 }
 
@@ -162,6 +167,11 @@ fn evidence_tree_padded_leaves_replay_the_last_bucket() {
         let replayed = open_evidence_tree(application, rng, tree.pcd.clone(), leaf);
         let bucket = expected.get(index).copied().unwrap_or(last);
         assert_eq!(*replayed.pcd.data(), bucket);
+        assert!(
+            application
+                .verify_uncompressed(&replayed.pcd, &mut *rng)
+                .unwrap()
+        );
     }
 }
 
