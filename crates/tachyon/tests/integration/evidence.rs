@@ -95,26 +95,26 @@ fn evidence_tree_replays_the_bucket_each_leaf_holds() {
     let rng = &mut StdRng::seed_from_u64(0);
     assert!(shallow.iter().all(|bucket| bucket.pcd.data().4.depth == 2));
 
-    let (pool, deep_final_anchor) = small_epoch(rng);
+    let (pool, ragged_final_anchor) = small_epoch(rng);
     let routed = build_qr_partition(
         application,
         rng,
         &pool,
-        (Anchor::default(), deep_final_anchor),
+        (Anchor::default(), ragged_final_anchor),
         discriminant,
         24,
-        6,
+        5,
     );
-    assert!(routed.iter().any(|intake| intake.pcd.data().4.depth < 6));
-    let deep = routed
+    assert!(routed.iter().any(|intake| intake.pcd.data().4.depth < 5));
+    let ragged = routed
         .into_iter()
         .map(|intake| seal_qr_intake(application, rng, intake, Anchor::from(Fp::ZERO)))
         .collect::<Vec<_>>();
-    let deep_tree = build_evidence_tree(application, rng, deep.clone());
+    let ragged_tree = build_evidence_tree(application, rng, ragged.clone());
 
     for (final_anchor, sealed, tree) in [
         (shallow_final_anchor, shallow, shallow_tree),
-        (deep_final_anchor, deep, deep_tree),
+        (ragged_final_anchor, ragged, ragged_tree),
     ] {
         let (epoch, anchor_start, anchor_next, root_discriminant, _) = *tree.pcd.data();
         assert_eq!(
