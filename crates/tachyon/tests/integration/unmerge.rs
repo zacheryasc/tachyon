@@ -295,7 +295,7 @@ fn unmerge_by_a_lifted_divisor() {
     );
     let stamped_at = pool.height();
 
-    pool.advance(2, |_| random_block(rng, 1, 4));
+    pool.advance(2, |_| random_block(rng, 1, 1));
     let mut alice = wallet.autonome(
         application,
         rng,
