@@ -210,6 +210,82 @@ fn qr_intake_split_rejects_a_forged_partition() {
 }
 
 #[test]
+fn qr_intake_split_rejects_an_empty_intake() {
+    let application = &*application();
+    let rng = &mut StdRng::seed_from_u64(0);
+    let start = Anchor::random(rng);
+    let discriminant = QrDiscriminant::random(rng);
+    let intake = seed_qr_empty_intake(application, rng, start, EpochIndex::new(3), discriminant);
+
+    assert_matches!(
+        application
+            .fuse(
+                rng,
+                qr::QrIntakeSplit,
+                witness::qr_intake_split((*intake.pcd.data(), ()), &[]),
+                intake.pcd,
+                application.bootstrap_proof().clone().carry::<()>(()),
+            )
+            .err(),
+        Some(ragu_core::Error::InvalidWitness(err))
+            if err.to_string() == "QrIntakeSplit: an empty intake cannot be split"
+    );
+}
+
+#[test]
+fn qr_side_descend_rejects_a_split_into_the_same_set() {
+    let application = &*application();
+    let rng = &mut StdRng::seed_from_u64(0);
+    let epoch = EpochIndex::new(3);
+    let start = Anchor::random(rng);
+    let discriminant = QrDiscriminant::random(rng);
+    let member = Tachygram::random(rng);
+    let side = qr::classify(Fp::from(member), discriminant.at(0)).0;
+
+    let (root, ()) = application
+        .seed(
+            rng,
+            qr::QrStampIntakeSeed,
+            witness::qr_stamp_intake_seed(((), ()), start, epoch, discriminant, &[member, member]),
+        )
+        .unwrap();
+    let half = TachygramSetPoly::from_iter([member]);
+    let (sides, ()) = application
+        .fuse(
+            rng,
+            qr::QrIntakeSplit,
+            (half.clone(), half),
+            root,
+            application.bootstrap_proof().clone().carry::<()>(()),
+        )
+        .unwrap();
+
+    let (selection, ()) = application
+        .fuse(
+            rng,
+            qr::QrSideSelect,
+            witness::qr_side_select((*sides.data(), ()), &[member, member], side),
+            sides.clone(),
+            application.bootstrap_proof().clone().carry::<()>(()),
+        )
+        .unwrap();
+
+    assert_matches!(
+        application
+            .fuse(
+                rng,
+                qr::QrSideDescend,
+                witness::qr_side_descend((*sides.data(), *selection.data()), side),
+                sides,
+                selection,
+            )
+            .err(),
+        Some(ragu_core::Error::InvalidWitness(err))
+            if err.to_string() == "QrSideDescend: the two sides are the same set"
+    );
+}
+
+#[test]
 fn qr_side_select_checks_the_exceptional_value_at_its_depth() {
     let application = &*application();
     let rng = &mut StdRng::seed_from_u64(0);
@@ -301,24 +377,18 @@ fn qr_side_descend_carries_each_side_one_level_down() {
     let start = Anchor::random(rng);
     let discriminant = QrDiscriminant::random(rng);
     for members in [
-        vec![],
         vec![Tachygram::from(-Fp::from(discriminant))],
         iter::repeat_with(|| Tachygram::random(rng))
             .take(12)
             .collect(),
     ] {
-        let root = if members.is_empty() {
-            seed_qr_empty_intake(application, rng, start, epoch, discriminant).pcd
-        } else {
-            application
-                .seed(
-                    rng,
-                    qr::QrStampIntakeSeed,
-                    witness::qr_stamp_intake_seed(((), ()), start, epoch, discriminant, &members),
-                )
-                .unwrap()
-                .0
-        };
+        let (root, ()) = application
+            .seed(
+                rng,
+                qr::QrStampIntakeSeed,
+                witness::qr_stamp_intake_seed(((), ()), start, epoch, discriminant, &members),
+            )
+            .unwrap();
         let (_, _, anchor_end, ..) = *root.data();
         let (split, ()) = application
             .fuse(
@@ -700,17 +770,13 @@ fn qr_side_descend_refuses_a_full_register() {
         pcd: root,
         members: members.to_vec(),
     };
-    for _ in 0..QrProfile::MAX_DEPTH {
-        [intake] = split_qr_intake(application, rng, intake, [true]);
+    let followed = Fp::from(members[0]);
+    for level in 0..u32::BITS {
+        let side = qr::classify(followed, discriminant.at(level)).0;
+        [intake] = split_qr_intake(application, rng, intake, [side]);
     }
     let (.., profile) = *intake.pcd.data();
-    assert_eq!(
-        profile,
-        QrProfile {
-            depth: u32::BITS,
-            bits: u32::MAX
-        }
-    );
+    assert_eq!(profile, qr_profile_of(followed, discriminant, u32::BITS));
 
     let split_witness = witness::qr_intake_split((*intake.pcd.data(), ()), &intake.members);
     let (sides, ()) = application
@@ -1682,11 +1748,24 @@ fn qr_bucket_seal_refuses_the_final_epoch() {
 fn qr_unspent_init_accepts_buckets_at_every_depth() {
     let application = &*application();
     let rng = &mut StdRng::seed_from_u64(0);
-    let (pool, final_anchor) = small_epoch(rng);
+    let (mut pool, _) = small_epoch(rng);
     let epoch = BlockHeight(0).epoch();
     let epoch_next = epoch.next().unwrap();
     let discriminant = QrDiscriminant::random(rng);
-    let value = Fp::random(|bytes| rng.fill_bytes(bytes));
+
+    // An element `n - discriminant` takes the quadratic character of `n + level`
+    // at each level, and the 32 consecutive characters from 40621 match those
+    // from 126676, so the member shares the absent value's whole profile.
+    let value = Fp::from(40_621u64) - Fp::from(discriminant);
+    let member = Fp::from(126_676u64) - Fp::from(discriminant);
+    assert_ne!(value, member);
+    assert_eq!(
+        qr_profile_of(value, discriminant, u32::BITS),
+        qr_profile_of(member, discriminant, u32::BITS)
+    );
+    pool.mine(vec![vec![Tachygram::from(member)]]);
+    let final_anchor = pool.block(pool.height()).anchor();
+
     let nf = Nullifier::from(value);
     let mut roots = build_qr_partition(
         application,
@@ -1705,6 +1784,7 @@ fn qr_unspent_init_accepts_buckets_at_every_depth() {
                 intake.pcd.data().4,
                 qr_profile_of(value, discriminant, depth)
             );
+            assert!(intake.members.contains(&Tachygram::from(member)));
             let bucket = seal_qr_intake(
                 application,
                 rng,

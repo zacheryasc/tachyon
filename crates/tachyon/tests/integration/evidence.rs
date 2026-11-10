@@ -94,6 +94,7 @@ fn evidence_tree_replays_the_bucket_each_leaf_holds() {
     let application = &*application();
     let rng = &mut StdRng::seed_from_u64(0);
 
+    assert!(sealed.iter().all(|bucket| bucket.pcd.data().4.depth == 2));
     let (epoch, anchor_start, anchor_next, root_discriminant, _) = *tree.pcd.data();
     assert_eq!(
         (epoch, anchor_start, anchor_next, root_discriminant),
@@ -104,7 +105,42 @@ fn evidence_tree_replays_the_bucket_each_leaf_holds() {
             discriminant
         )
     );
+    for (leaf, bucket) in tree.leaves.iter().zip(&sealed) {
+        let replayed = open_evidence_tree(application, rng, tree.pcd.clone(), leaf);
+        assert_eq!(*replayed.pcd.data(), *bucket.pcd.data());
+        assert!(
+            application
+                .verify_uncompressed(&replayed.pcd, &mut *rng)
+                .unwrap()
+        );
+    }
 
+    let (pool, final_anchor) = small_epoch(rng);
+    let routed = build_qr_partition(
+        application,
+        rng,
+        &pool,
+        (Anchor::default(), final_anchor),
+        discriminant,
+        24,
+        6,
+    );
+    assert!(routed.iter().any(|intake| intake.pcd.data().4.depth < 6));
+    let sealed = routed
+        .into_iter()
+        .map(|intake| seal_qr_intake(application, rng, intake, Anchor::from(Fp::ZERO)))
+        .collect::<Vec<_>>();
+    let tree = build_evidence_tree(application, rng, sealed.clone());
+    let (epoch, anchor_start, anchor_next, root_discriminant, _) = *tree.pcd.data();
+    assert_eq!(
+        (epoch, anchor_start, anchor_next, root_discriminant),
+        (
+            EpochIndex::new(0),
+            Anchor::default(),
+            final_anchor.next_epoch(EpochIndex::new(1)).unwrap(),
+            discriminant
+        )
+    );
     for (leaf, bucket) in tree.leaves.iter().zip(&sealed) {
         let replayed = open_evidence_tree(application, rng, tree.pcd.clone(), leaf);
         assert_eq!(*replayed.pcd.data(), *bucket.pcd.data());
