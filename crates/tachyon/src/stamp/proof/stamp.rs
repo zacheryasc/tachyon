@@ -21,7 +21,7 @@ use udon::{curve::Affine as _, field::Field as _};
 use super::{output::OutputHeader, pool::AnchorSpan, spend::SpendHeader};
 use crate::{
     ActionSetPoly, TachygramSetPoly,
-    constants::MAX_MONEY,
+    constants::{MAX_MONEY, orchard},
     digest::poseidon,
     entropy::ActionEntropy,
     keys::{ProofAuthorizingKey, private},
@@ -830,8 +830,8 @@ pub struct FeeFuse;
 lazy_static! {
     // s = MAX_MONEY - maximum, so the corrected walk computes [-maximum]V.
     static ref FEE_V_TABLE: curve::fixed_base::unsigned::Table<17> = curve::fixed_base::unsigned::table(
-        *value::VALUE_COMMIT_V,
-        -*value::VALUE_COMMIT_V * Fq::from(MAX_MONEY)
+        *orchard::VALUE_COMMIT_V,
+        -*orchard::VALUE_COMMIT_V * Fq::from(MAX_MONEY)
     );
 }
 

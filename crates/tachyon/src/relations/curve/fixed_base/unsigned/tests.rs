@@ -65,8 +65,8 @@ fn doubling_bits<const N: usize>(top: u8) -> [bool; N] {
 
 #[test]
 fn walk_counts() {
-    let wide = table::<85>(*value::VALUE_COMMIT_R, Ep::identity());
-    let short = table::<17>(*value::VALUE_COMMIT_V, Ep::identity());
+    let wide = table::<85>(*orchard::VALUE_COMMIT_R, Ep::identity());
+    let short = table::<17>(*orchard::VALUE_COMMIT_V, Ep::identity());
     Simulator::<Fp>::simulate((), |dr, _| {
         let bits = FixedVec::<_, ConstLen<255>>::try_from_fn(|_| {
             Boolean::alloc(dr, &mut (), Simulator::<Fp>::just(|| false))
@@ -107,7 +107,7 @@ fn walks_match_native() {
         cases.push([*window; 85].as_flattened().try_into().unwrap());
     }
     for (base, correction) in [
-        (*value::VALUE_COMMIT_R, Ep::identity()),
+        (*orchard::VALUE_COMMIT_R, Ep::identity()),
         (ACTION_AUTH_GENERATOR.to_projective(), Ep::identity()),
     ] {
         let wide = table::<85>(base, correction);
@@ -115,7 +115,7 @@ fn walks_match_native() {
             check_walk(&wide, base, correction, *bits);
         }
     }
-    let value_base = *value::VALUE_COMMIT_V;
+    let value_base = *orchard::VALUE_COMMIT_V;
     for (base, correction) in [
         (value_base, Ep::identity()),
         (-value_base, Ep::identity()),
@@ -145,11 +145,11 @@ fn top_addition_inverse_and_doubling() {
 
     for top in [1, 5] {
         let bits = doubling_bits::<255>(top);
-        check_walk(&R_TABLE, *value::VALUE_COMMIT_R, Ep::identity(), bits);
+        check_walk(&R_TABLE, *orchard::VALUE_COMMIT_R, Ep::identity(), bits);
         let generator = ACTION_AUTH_GENERATOR.to_projective();
         check_walk(&G_TABLE, generator, Ep::identity(), bits);
     }
-    let value_base = *value::VALUE_COMMIT_V;
+    let value_base = *orchard::VALUE_COMMIT_V;
     check_walk(&V_TABLE, value_base, Ep::identity(), doubling_bits::<51>(1));
     check_walk(
         &NEG_V_TABLE,
@@ -161,8 +161,8 @@ fn top_addition_inverse_and_doubling() {
 
 #[test]
 fn commitment_and_digest_walks_match_native() {
-    let value_base = *value::VALUE_COMMIT_V;
-    let blind_base = *value::VALUE_COMMIT_R;
+    let value_base = *orchard::VALUE_COMMIT_V;
+    let blind_base = *orchard::VALUE_COMMIT_R;
     for (amount, blind) in [
         (0u64, Fq::ONE),
         (1, Fq::ZERO),

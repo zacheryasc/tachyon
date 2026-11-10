@@ -3,9 +3,6 @@
 use core::{cmp, ops, ops::Neg as _};
 
 use derive_more::{Add, Debug, Display, Eq as TotalEq, Error, From, Into, PartialEq, Sub, Sum};
-use group::GroupEncoding as _;
-use lazy_static::lazy_static;
-use pasta_curves::{arithmetic::CurveExt as _, pallas::Point};
 use rand_core::CryptoRng;
 use udon::{
     curve::{Affine as _, Projective as _},
@@ -13,7 +10,10 @@ use udon::{
 };
 
 use crate::{
-    constants::MAX_MONEY,
+    constants::{
+        MAX_MONEY,
+        orchard::{VALUE_COMMIT_R, VALUE_COMMIT_V},
+    },
     pasta::{Ep, EpAffine, Fq},
 };
 
@@ -31,27 +31,6 @@ pub type Positive = Value<0, { MAX_MONEY.cast_signed() }>;
 
 /// A non-positive integer not less than `-MAX_MONEY`.
 pub type Negative = Value<{ -MAX_MONEY.cast_signed() }, 0>;
-
-/// Shared with Orchard (§5.4.8.3).
-const VALUE_COMMITMENT_DOMAIN: &str = "z.cash:Orchard-cv";
-
-lazy_static! {
-    /// Generator $\mathcal{V}$ for value commitments.
-    pub(crate) static ref VALUE_COMMIT_V: Ep = {
-        #[expect(clippy::expect_used, reason = "the fixed generator has a canonical encoding")]
-        EpAffine::from_bytes(Point::hash_to_curve(VALUE_COMMITMENT_DOMAIN)(b"v").to_bytes())
-            .expect("valid Orchard generator")
-            .to_projective()
-    };
-
-    /// Generator $\mathcal{R}$ for value commitments and binding signatures.
-    pub(crate) static ref VALUE_COMMIT_R: Ep = {
-        #[expect(clippy::expect_used, reason = "the fixed generator has a canonical encoding")]
-        EpAffine::from_bytes(Point::hash_to_curve(VALUE_COMMITMENT_DOMAIN)(b"r").to_bytes())
-            .expect("valid Orchard generator")
-            .to_projective()
-    };
-}
 
 /// Entropy for a value commitment.
 ///

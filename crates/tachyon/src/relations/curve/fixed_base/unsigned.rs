@@ -43,19 +43,18 @@ use udon::{
 
 use super::{
     super::super::super::{
-        keys::public::ACTION_AUTH_GENERATOR,
+        constants::orchard::{self, ACTION_AUTH_GENERATOR},
         pasta::{Ep, EpAffine, Fp, Fq},
-        value,
     },
     CompletePoint, Window, add_finite, add_incomplete, select,
 };
 
 lazy_static! {
-    pub(crate) static ref R_TABLE: Table<85> = table(*value::VALUE_COMMIT_R, Ep::identity());
+    pub(crate) static ref R_TABLE: Table<85> = table(*orchard::VALUE_COMMIT_R, Ep::identity());
     pub(crate) static ref G_TABLE: Table<85> =
         table(ACTION_AUTH_GENERATOR.to_projective(), Ep::identity());
-    pub(crate) static ref V_TABLE: Table<17> = table(*value::VALUE_COMMIT_V, Ep::identity());
-    pub(crate) static ref NEG_V_TABLE: Table<17> = table(-*value::VALUE_COMMIT_V, Ep::identity());
+    pub(crate) static ref V_TABLE: Table<17> = table(*orchard::VALUE_COMMIT_V, Ep::identity());
+    pub(crate) static ref NEG_V_TABLE: Table<17> = table(-*orchard::VALUE_COMMIT_V, Ep::identity());
 }
 
 pub(crate) struct Table<const W: usize> {
