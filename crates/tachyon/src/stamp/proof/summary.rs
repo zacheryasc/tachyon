@@ -22,6 +22,7 @@ use ragu_core::{
     pasta::Pasta,
 };
 use ragu_primitives::{Element, allocator::Allocator, io::Write};
+use udon::curve::Affine as _;
 
 use crate::{
     digest::poseidon,

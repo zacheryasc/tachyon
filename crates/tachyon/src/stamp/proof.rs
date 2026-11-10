@@ -62,7 +62,11 @@ fn empty_stamp_bridge_hash(
     let (bridge_x, bridge_y) = commitment.to_affine().coordinates().ok_or_else(|| {
         ragu_core::Error::Initialization("constant-one bridge hash is not finite".into())
     })?;
-    TachygramSetBridge::from_xy(bridge_x, bridge_y)
+    pasta::EpAffine::from_xy(bridge_x, bridge_y)
+        .map(TachygramSetBridge::from)
+        .ok_or_else(|| {
+            ragu_core::Error::Initialization("constant-one bridge hash is not on the curve".into())
+        })
 }
 
 /// Step admission checks for the stamp's epoch and nonempty tachygram set.
@@ -71,7 +75,13 @@ fn enforce_stamp_domain<'dr, D: Driver<'dr, F = pasta::Fp>>(
     epoch: &Element<'dr, D>,
     bridge_hash: &[Element<'dr, D>; 2],
 ) -> ragu_core::Result<()> {
-    let (low, high) = EMPTY_STAMP_BRIDGE_HASH.coordinates();
+    #[expect(
+        clippy::expect_used,
+        reason = "empty_stamp_bridge_hash builds the point from finite coordinates"
+    )]
+    let (low, high) = pasta::EpAffine::from(*EMPTY_STAMP_BRIDGE_HASH)
+        .coordinates()
+        .expect("constant-one bridge hash is finite");
     let low_element = Element::constant(dr, low);
     let high_element = Element::constant(dr, high);
     let equal_low = bridge_hash[0].is_equal(dr, &mut (), &low_element)?;
@@ -173,7 +183,7 @@ mod tests {
         // Exercise synthesis without witness values before using the application.
         let mut counter = Emulator::counter();
         let epoch = Element::constant(&mut counter, pasta::Fp::ZERO);
-        let hash = <[pasta::Fp; 2]>::from(prepared.coordinates())
+        let hash = <[pasta::Fp; 2]>::from(pasta::EpAffine::from(prepared).coordinates().unwrap())
             .map(|value| Element::constant(&mut counter, value));
         enforce_stamp_domain(&mut counter, &epoch, &hash).unwrap();
 

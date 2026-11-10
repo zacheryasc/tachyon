@@ -387,8 +387,8 @@ impl<P: Proof> StampState for ProofStamp<P> {
 }
 
 impl<P: Proof> ProofStamp<P> {
-    /// Read a stamp with a compactSize-prefixed proof encoding.
-    /// The proof type's encoded length bounds buffering.
+    /// Read a stamp from the consensus wire format. The proof blob has a
+    /// compactSize prefix and is bounded by the proof type's encoded length.
     ///
     /// # Errors
     ///
@@ -472,7 +472,8 @@ impl<P: Proof> ProofStamp<P> {
         })
     }
 
-    /// Write a stamp with a compactSize-prefixed proof encoding.
+    /// Write a stamp to the consensus wire format. The proof blob has a
+    /// compactSize prefix.
     ///
     /// # Errors
     ///
@@ -508,56 +509,6 @@ impl<P: Proof> ProofStamp<P> {
             })?,
         )?;
         writer.write_all(&proof)
-    }
-
-    /// Confirm `hStampCoverageTachyon` represents the given descriptors.
-    ///
-    /// # Soundness
-    ///
-    /// The parameters are multisets: order does not matter, multiplicity does.
-    #[must_use]
-    pub fn is_covering(
-        &self,
-        action_descs: impl IntoIterator<Item = action::Descriptor>,
-        fee_descriptors: impl IntoIterator<Item = fee::Descriptor>,
-    ) -> bool {
-        let mut desc_bytes = action_descs.into_iter().collect::<Vec<[u8; 64]>>();
-        desc_bytes.sort_unstable();
-
-        let mut fee_descriptor_bytes = fee_descriptors
-            .into_iter()
-            .map(<[u8; 40]>::from)
-            .collect::<Vec<[u8; 40]>>();
-        fee_descriptor_bytes.sort_unstable();
-        self.coverage
-            == blake2b::stamp_coverage_digest(
-                &blake2b::action_descriptor_digest(&desc_bytes),
-                &blake2b::stamp_fees_digest(&fee_descriptor_bytes),
-            )
-    }
-
-    /// Reconstruct the PCD header and verify the proof. Call
-    /// [`ProofStamp::is_covering`] first to cheaply predict a mismatch.
-    ///
-    /// # Soundness
-    ///
-    /// The parameter is a multiset: order does not matter, multiplicity does.
-    /// The header is built from [`Self::tachygram_set`], so the published
-    /// [`Self::tachygrams`] are not read here.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ragu_core::Error`] if the proof system fails. A disproved
-    /// proof is reported as `Ok(false)`, not an error.
-    pub fn verify_proof<RNG: CryptoRng>(
-        &self,
-        rng: &mut RNG,
-        action_digests: impl IntoIterator<Item = ActionDigest>,
-    ) -> Result<bool, ragu_core::Error> {
-        let action_set = ActionSetPoly::from_iter(action_digests);
-
-        self.proof
-            .verify(rng, (action_set.commit(), self.tachygram_set, self.anchor))
     }
 }
 
@@ -857,10 +808,10 @@ pub type Compressed = ragu::CompressedProof<Pasta>;
 
 /// A stamp carrying tachygrams, anchor, and a proof for specific actions.
 ///
-/// The scalar header carries the tachygram bridge hash and anchor. Verification
-/// checks the output slots against the covered action digests and carried
-/// tachygram commitment. Bundle verification also checks the published
-/// tachygrams.
+/// The PCD header `(tachygram_bridge, anchor)` is entirely not stored
+/// here.  The covered actions are present only as reference. A verifier must
+/// reconstruct the header from public data and check the proof's output slots
+/// against the covered actions and [`Self::tachygram_set`].
 ///
 /// Only the uncompressed proof type supports lifting, merging and
 /// unmerging. Compressed stamps support reading, writing and verification.
@@ -1068,10 +1019,12 @@ impl ProofStamp<Uncompressed> {
             .iter()
             .copied()
             .collect::<TachygramSetPoly>();
+
         let right_tg_poly = right_tachygrams
             .iter()
             .copied()
             .collect::<TachygramSetPoly>();
+
         let left_pcd =
             left_proof.carry::<Stamp>(Stamp::header(left_tg_poly.commit(), left_anchor)?);
         let right_pcd =
@@ -1109,7 +1062,8 @@ impl ProofStamp<Uncompressed> {
     /// # Errors
     ///
     /// - [`ProveError::MissingPcd`] if no span is provided.
-    /// - [`ProveError::ProofFailed`] if a proof-system step fails.
+    /// - [`ProveError::ProofFailed`] if a proof-system step fails, including
+    ///   when `action_digests` are not the stamp's action set.
     fn prove_lift<RNG: CryptoRng>(
         self,
         rng: &mut RNG,
@@ -1122,19 +1076,19 @@ impl ProofStamp<Uncompressed> {
             ));
         }
 
-        let header =
-            Stamp::header(self.tachygram_set, self.anchor).map_err(ProveError::ProofFailed)?;
-        let mut stamp_pcd = self.proof.carry::<Stamp>(header);
         let action_set = action_digests.into_iter().collect::<ActionSetPoly>();
-        let [action_slot, _] = stamp_pcd.commitments();
-        if action_slot != Eq::from(action_set.commit()).to_affine() {
-            return Err(ProveError::ProofFailed(ragu_core::Error::InvalidWitness(
-                "StampLift: action set does not match the stamp".into(),
-            )));
-        }
+        let mut stamp_pcd = self.proof.carry::<Stamp>(
+            Stamp::header(self.tachygram_set, self.anchor).map_err(ProveError::ProofFailed)?,
+        );
         for span in spans {
             stamp_pcd = PROOF_SYSTEM
-                .fuse(rng, StampLift, (), stamp_pcd, span)
+                .fuse(
+                    rng,
+                    StampLift,
+                    witness::stamp_lift((*stamp_pcd.data(), *span.data()), action_set.clone()),
+                    stamp_pcd,
+                    span,
+                )
                 .map_err(ProveError::ProofFailed)?
                 .0;
         }
@@ -1161,7 +1115,8 @@ impl ProofStamp<Uncompressed> {
     /// # Errors
     ///
     /// Returns [`ProveError`] if an action digest cannot be computed, no span
-    /// is provided, or a proof-system step fails.
+    /// is provided, or a proof-system step fails. `StampLift` fails when the
+    /// descriptors are not the stamp's covered actions.
     pub fn lift<RNG: CryptoRng>(
         self,
         rng: &mut RNG,
@@ -1187,9 +1142,6 @@ impl ProofStamp<Uncompressed> {
     ///
     /// The merged stamp stays with this stamp's bundle and keeps this stamp's
     /// fee, and the other stamp's bundle is stripped.
-    ///
-    /// TODO: confirm desc list against stamp? it's forbidden by the proof
-    /// system, but we might want to fail early.
     ///
     /// # Errors
     ///
@@ -1384,36 +1336,18 @@ impl ProofStamp<Uncompressed> {
         })
     }
 
-    /// Compresses the proof against the covered action and fee descriptors.
+    /// Compresses the stamp's proof.
     ///
     /// # Errors
     ///
-    /// Returns [`ProveError`] if an action digest cannot be computed or the
-    /// proof-system compression fails.
+    /// Returns [`ProveError::ProofFailed`] if the proof system fails.
     pub fn compress<RNG: CryptoRng>(
         self,
         rng: &mut RNG,
-        descriptors: &BTreeSet<action::Descriptor>,
-        fee_descriptors: &BTreeSet<fee::Descriptor>,
     ) -> Result<ProofStamp<Compressed>, ProveError> {
-        let action_set = descriptors
-            .iter()
-            .map(action::Descriptor::digest)
-            .chain(fee_descriptors.iter().map(fee::Descriptor::digest))
-            .collect::<Result<ActionSetPoly, ActionDigestError>>()
-            .map_err(ProveError::ActionDigest)?;
-
         let pcd = self.proof.carry::<Stamp>(
             Stamp::header(self.tachygram_set, self.anchor).map_err(ProveError::ProofFailed)?,
         );
-        let [action_slot, tachygram_slot] = pcd.commitments();
-        if action_slot != Eq::from(action_set.commit()).to_affine()
-            || tachygram_slot != Eq::from(self.tachygram_set).to_affine()
-        {
-            return Err(ProveError::ProofFailed(ragu_core::Error::InvalidWitness(
-                "stamp output sets do not match the public sets".into(),
-            )));
-        }
         let (compressed, _) = PROOF_SYSTEM
             .compress(&pcd, rng)
             .map_err(ProveError::ProofFailed)?
@@ -1426,5 +1360,57 @@ impl ProofStamp<Uncompressed> {
             proof: Box::new(compressed),
             fee: self.fee,
         })
+    }
+}
+
+impl<P: Proof> ProofStamp<P> {
+    /// Confirm `hStampCoverageTachyon` represents the given descriptors.
+    ///
+    /// # Soundness
+    ///
+    /// The parameters are multisets: order does not matter, multiplicity does.
+    #[must_use]
+    pub fn is_covering(
+        &self,
+        action_descs: impl IntoIterator<Item = action::Descriptor>,
+        fee_descriptors: impl IntoIterator<Item = fee::Descriptor>,
+    ) -> bool {
+        let mut desc_bytes = action_descs.into_iter().collect::<Vec<[u8; 64]>>();
+        desc_bytes.sort_unstable();
+
+        let mut fee_descriptor_bytes = fee_descriptors
+            .into_iter()
+            .map(<[u8; 40]>::from)
+            .collect::<Vec<[u8; 40]>>();
+        fee_descriptor_bytes.sort_unstable();
+        self.coverage
+            == blake2b::stamp_coverage_digest(
+                &blake2b::action_descriptor_digest(&desc_bytes),
+                &blake2b::stamp_fees_digest(&fee_descriptor_bytes),
+            )
+    }
+
+    /// Reconstruct the PCD header and verify the proof. Call
+    /// [`ProofStamp::is_covering`] first to cheaply predict a mismatch.
+    ///
+    /// # Soundness
+    ///
+    /// The parameter is a multiset: order does not matter, multiplicity does.
+    /// The header is built from [`Self::tachygram_set`], so the published
+    /// [`Self::tachygrams`] are not read here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ragu_core::Error`] if the proof system fails. A disproved
+    /// proof is reported as `Ok(false)`, not an error.
+    pub fn verify_proof<RNG: CryptoRng>(
+        &self,
+        rng: &mut RNG,
+        action_digests: impl IntoIterator<Item = ActionDigest>,
+    ) -> Result<bool, ragu_core::Error> {
+        let action_set = ActionSetPoly::from_iter(action_digests);
+
+        self.proof
+            .verify(rng, (action_set.commit(), self.tachygram_set, self.anchor))
     }
 }
