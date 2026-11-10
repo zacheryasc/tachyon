@@ -460,6 +460,18 @@ impl PoolSim {
         }
     }
 
+    /// Mines through `height`, opening each epoch with a two-stamp block and
+    /// leaving every other block empty.
+    pub fn mine_through<RNG: CryptoRng>(&mut self, rng: &mut RNG, height: BlockHeight) {
+        while self.height() < height {
+            if self.height().next().unwrap().is_first_in_epoch() {
+                self.mine(random_block(rng, 1, 2));
+            } else {
+                self.mine(Vec::new());
+            }
+        }
+    }
+
     pub fn mine(&mut self, stamps: Vec<Vec<Tachygram>>) {
         let new_height = BlockHeight::from(self.history.len());
         let old_tip = self.anchor();
