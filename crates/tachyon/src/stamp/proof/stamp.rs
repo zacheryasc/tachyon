@@ -213,6 +213,8 @@ impl Step<Pasta> for OutputAction {
     type Witness<'source> = (ActionEntropy, Anchor, ActionSetPoly, TachygramSetPoly);
 
     const INDEX: Index = Index::new(7);
+    // O0/O1 carry action/tachygram sets; the derived action root is fixed before
+    // zeta.
     const NUM_STAGED: usize = 1;
 
     fn staged(
@@ -355,6 +357,8 @@ impl Step<Pasta> for SpendAction {
     );
 
     const INDEX: Index = Index::new(9);
+    // O0/O1 carry action/tachygram sets; the derived action root is fixed before
+    // zeta.
     const NUM_STAGED: usize = 1;
 
     fn staged(
@@ -493,6 +497,7 @@ impl Step<Pasta> for StampMerge {
 
     const INDEX: Index = Index::new(10);
 
+    // Child slots bind both inputs; O0/O1 carry their action/tachygram products.
     fn polynomials(
         &self,
         witness: &Self::Witness<'_>,
@@ -574,6 +579,7 @@ impl Step<Pasta> for ActionMerge {
 
     const INDEX: Index = Index::new(34);
 
+    // Child slots bind both inputs; O0/O1 carry their action/tachygram products.
     fn polynomials(
         &self,
         witness: &Self::Witness<'_>,
@@ -752,6 +758,7 @@ impl Step<Pasta> for ActionLift {
 
     const INDEX: Index = Index::new(35);
 
+    // Preserve L0/L1 in O0/O1; R0 supplies the span membership opening.
     fn polynomials(
         &self,
         &(): &Self::Witness<'_>,
@@ -795,7 +802,9 @@ impl Step<Pasta> for ActionLift {
                 "ActionLift: actions anchor is neither the span's start nor a member".into(),
             )
         })?;
-        let (data, aux) = right.map(|(_, end)| (end, ())).cast();
+        let (data, aux) = right
+            .map(|(_, span_anchor_end)| (span_anchor_end, ()))
+            .cast();
         let fields = ActionsOutput {
             anchor: right_encoded.as_gadget().anchor_end.clone(),
         };
@@ -944,7 +953,7 @@ impl Step<Pasta> for FeeFuse {
             ragu_core::Error::InvalidWitness("FeeFuse: fee change note commitment is zero".into())
         })?;
         let z = oracles.zeta().clone();
-        for (slot, root, error) in [
+        for (column, root, err) in [
             (
                 0,
                 fee_digest,
@@ -956,13 +965,13 @@ impl Step<Pasta> for FeeFuse {
                 "FeeFuse: output tachygram set must be the product of left and fee tachygram sets",
             ),
         ] {
-            let input = oracles.query(dr, Slot::left(slot), &z)?;
-            let output = oracles.query(dr, Slot::output(slot), &z)?;
+            let left_value = oracles.query(dr, Slot::left(column), &z)?;
+            let output_value = oracles.query(dr, Slot::output(column), &z)?;
             let factor = z.sub(dr, &root);
-            input
-                .mul(dr, &factor)?
-                .enforce_equal(dr, &output)
-                .map_err(|_err| ragu_core::Error::InvalidWitness(error.into()))?;
+            let expected = left_value.mul(dr, &factor)?;
+            output_value
+                .enforce_equal(dr, &expected)
+                .map_err(|_err| ragu_core::Error::InvalidWitness(err.into()))?;
         }
         let (encoded, data) = Stamp::output(oracles, left_encoded.as_gadget().anchor.clone())?;
         Ok(((left_encoded, right_encoded, encoded), data, D::unit()))
@@ -1133,8 +1142,7 @@ impl Step<Pasta> for FeeSeed {
 /// hand, and merging in a complement first lets division remove any leaf
 /// multiset the stamps in hand combine to express.
 ///
-/// Opens all six polynomials once at the same challenge and requires the
-/// dividend and divisor to have matching anchors.
+/// Six online polynomials open once each at one shared challenge.
 #[derive(Debug)]
 pub struct StampUnmerge;
 
@@ -1148,6 +1156,7 @@ impl Step<Pasta> for StampUnmerge {
 
     const INDEX: Index = Index::new(37);
 
+    // O0/O1 are quotients; each R column times its O column must equal L.
     fn polynomials(
         &self,
         witness: &Self::Witness<'_>,

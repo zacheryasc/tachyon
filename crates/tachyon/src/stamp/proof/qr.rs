@@ -444,9 +444,6 @@ impl Step<Pasta> for QrStampIntakeSeed {
 /// entry anchor of `epoch + 1` only if `anchor` is both the entry anchor and
 /// the final anchor of `epoch`. That holds only when the epoch published no
 /// stamp. `discriminant` is a free witness. See [`QrDiscriminant`].
-///
-/// The contents are committed before the random challenge and checked against
-/// the constant polynomial $1$, which represents an empty intake.
 /// O0 opens once at the challenge and is constrained to one.
 #[derive(Debug)]
 pub struct QrEmptyIntakeSeed;
@@ -483,14 +480,12 @@ impl Step<Pasta> for QrEmptyIntakeSeed {
         let left_encoded = Encoded::<D, Self::Left, HEADER_SIZE>::new(dr, &mut (), left.clone())?;
         let right_encoded =
             Encoded::<D, Self::Right, HEADER_SIZE>::new(dr, &mut (), right.clone())?;
+        let zeta = oracles.zeta().clone();
+        let contents = oracles.query(dr, Slot::output(0), &zeta)?;
         let one = Element::constant(dr, Fp::ONE);
-        let z = oracles.zeta().clone();
-        oracles
-            .query(dr, Slot::output(0), &z)?
-            .enforce_equal(dr, &one)
-            .map_err(|_err| {
-                ragu_core::Error::InvalidWitness("QrEmptyIntakeSeed: contents must be one".into())
-            })?;
+        contents.enforce_equal(dr, &one).map_err(|_err| {
+            ragu_core::Error::InvalidWitness("QrEmptyIntakeSeed: contents must be one".into())
+        })?;
         let anchor_element =
             Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.0)))?;
         let discriminant_element =
@@ -903,7 +898,7 @@ impl Step<Pasta> for QrSideDescend {
     ) -> ragu_core::Result<[Vec<Fp>; 2]> {
         #[expect(
             clippy::indexing_slicing,
-            reason = "a boolean selects one of the two side slots"
+            reason = "a boolean selects index zero or one in a two-slot header"
         )]
         let selected = &left.polynomials[usize::from(!witness.0)];
         Ok([selected.clone(), alloc::vec![Fp::ONE]])
@@ -1291,12 +1286,13 @@ impl Step<Pasta> for QrBucketSeal {
             bits: left_encoded.as_gadget().bits.clone(),
             contents_hash: oracles.bridge_hash().clone(),
         };
-        let z = oracles.zeta().clone();
-        let contents_at_z = oracles.query(dr, Slot::left(0), &z)?;
-        let output_at_z = oracles.query(dr, Slot::output(0), &z)?;
-        let bridge_at_z = oracles.query(dr, Slot::output(1), &z)?;
-        contents_at_z.enforce_equal(dr, &output_at_z)?;
-        contents_at_z.enforce_equal(dr, &bridge_at_z)?;
+        let zeta = oracles.zeta().clone();
+        let contents = oracles.query(dr, Slot::left(0), &zeta)?;
+        for slot in [Slot::output(0), Slot::output(1)] {
+            oracles
+                .query(dr, slot, &zeta)?
+                .enforce_equal(dr, &contents)?;
+        }
         Ok((
             (left_encoded, right_encoded, Encoded::from_gadget(fields)),
             data,
