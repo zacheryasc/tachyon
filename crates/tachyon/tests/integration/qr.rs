@@ -1686,39 +1686,58 @@ fn qr_unspent_init_accepts_buckets_at_every_depth() {
     let epoch = BlockHeight(0).epoch();
     let epoch_next = epoch.next().unwrap();
     let discriminant = QrDiscriminant::random(rng);
-    for depth in [0, 1, 31, u32::BITS] {
-        let value = Fp::random(|bytes| rng.fill_bytes(bytes));
-        let bucket = qr_bucket_at(
-            application,
-            rng,
-            &pool,
-            (Anchor::default(), final_anchor),
-            discriminant,
-            24,
-            depth,
-            value,
-            Anchor::from(Fp::ZERO),
-        );
-        let nf = Nullifier::from(value);
-        let segment = qr_bucket_segment(application, rng, &bucket, |_| nf);
-        assert_eq!(
-            *segment.data(),
-            (
-                Anchor::default(),
-                epoch,
-                epoch_next,
-                final_anchor.next_epoch(epoch_next).unwrap()
-            )
-        );
-        assert_eq!(
-            segment.commitments()[0],
-            Eq::from(NfSeqPoly::new(epoch, &[nf]).commit()).to_affine()
-        );
-        assert!(
-            application
-                .verify_uncompressed(&segment, &mut *rng)
-                .unwrap()
-        );
+    let value = Fp::random(|bytes| rng.fill_bytes(bytes));
+    let nf = Nullifier::from(value);
+    let mut roots = build_qr_partition(
+        application,
+        rng,
+        &pool,
+        (Anchor::default(), final_anchor),
+        discriminant,
+        24,
+        0,
+    );
+    assert_eq!(roots.len(), 1);
+    let mut intake = roots.pop().unwrap();
+    for depth in 0..=u32::BITS {
+        if [0, 1, 31, u32::BITS].contains(&depth) {
+            assert_eq!(
+                intake.pcd.data().4,
+                qr_profile_of(value, discriminant, depth)
+            );
+            let bucket = seal_qr_intake(
+                application,
+                rng,
+                QrIntakeEntry {
+                    pcd: intake.pcd.clone(),
+                    members: intake.members.clone(),
+                },
+                Anchor::from(Fp::ZERO),
+            );
+            let segment = qr_bucket_segment(application, rng, &bucket, |_| nf);
+            assert_eq!(
+                *segment.data(),
+                (
+                    Anchor::default(),
+                    epoch,
+                    epoch_next,
+                    final_anchor.next_epoch(epoch_next).unwrap()
+                )
+            );
+            assert_eq!(
+                segment.commitments()[0],
+                Eq::from(NfSeqPoly::new(epoch, &[nf]).commit()).to_affine()
+            );
+            assert!(
+                application
+                    .verify_uncompressed(&segment, &mut *rng)
+                    .unwrap()
+            );
+        }
+        if depth < u32::BITS {
+            let side = qr::classify(value, discriminant.at(depth)).0;
+            [intake] = split_qr_intake(application, rng, intake, [side]);
+        }
     }
 }
 
