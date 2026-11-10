@@ -48,9 +48,14 @@ impl Trapdoor {
     /// The zero trapdoor.
     pub const ZERO: Self = Self(Fq::ZERO);
 
-    /// Generate a random trapdoor.
+    /// Generate a nonzero random trapdoor for an action.
     pub fn random<RNG: CryptoRng>(rng: &mut RNG) -> Self {
-        Self(Fq::random(|bytes| rng.fill_bytes(bytes)))
+        loop {
+            let scalar = Fq::random(|bytes| rng.fill_bytes(bytes));
+            if scalar != Fq::ZERO {
+                return Self(scalar);
+            }
+        }
     }
 
     /// A trapdoor derived from other secret data, such as a max fee note's
