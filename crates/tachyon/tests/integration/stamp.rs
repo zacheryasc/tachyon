@@ -587,10 +587,24 @@ fn lift_moves_the_anchor_and_keeps_the_proof_valid() {
             .unwrap()
     );
 
-    let foreign = BTreeSet::from([random_action(rng).descriptor()]);
-    assert_matches!(
-        stamp.lift(application, rng, &foreign, &fees, vec![span]),
-        Err(ProveError::ProofFailed(ragu_core::Error::InvalidWitness(_)))
+    let foreign = random_action(rng).descriptor();
+    let mismatched = stamp
+        .lift(
+            application,
+            rng,
+            &BTreeSet::from([foreign]),
+            &fees,
+            vec![span],
+        )
+        .unwrap();
+    assert!(
+        !mismatched
+            .verify_proof(
+                application,
+                rng,
+                [foreign.digest().unwrap(), fee_descriptor.digest().unwrap()],
+            )
+            .unwrap()
     );
 }
 
