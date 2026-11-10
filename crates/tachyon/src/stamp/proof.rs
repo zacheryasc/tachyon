@@ -35,6 +35,7 @@ use ragu::{Application, ApplicationBuilder, RegistryTags, step::Step};
 use ragu_circuits::polynomials::ProductionRank;
 use ragu_core::{drivers::Driver, pasta::Pasta};
 use ragu_primitives::Element;
+use udon::curve::Affine as _;
 
 use crate::{
     constants::EPOCH_MAX,

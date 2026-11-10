@@ -569,7 +569,11 @@ fn lift_moves_the_anchor_and_keeps_the_proof_valid() {
         )
         .unwrap();
     assert_eq!(lifted_decoded.anchor, pool.block(lifted_to).anchor());
-    assert!(lifted_decoded.verify_proof(application, rng, digests).unwrap());
+    assert!(
+        lifted_decoded
+            .verify_proof(application, rng, digests)
+            .unwrap()
+    );
 
     let foreign = BTreeSet::from([random_action(rng).descriptor()]);
     assert_matches!(
