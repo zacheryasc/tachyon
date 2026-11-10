@@ -213,7 +213,7 @@ impl Step<Pasta> for OutputAction {
     type Witness<'source> = (ActionEntropy, Anchor, ActionSetPoly, TachygramSetPoly);
 
     const INDEX: Index = Index::new(7);
-    // O0/O1 carry action/tachygram sets; the action digest is fixed before
+    // O0/O1 carry action/tachygram sets; the derived action root is fixed before
     // zeta.
     const NUM_STAGED: usize = 1;
 
@@ -357,7 +357,7 @@ impl Step<Pasta> for SpendAction {
     );
 
     const INDEX: Index = Index::new(9);
-    // O0/O1 carry action/tachygram sets; the action digest is fixed before
+    // O0/O1 carry action/tachygram sets; the derived action root is fixed before
     // zeta.
     const NUM_STAGED: usize = 1;
 
@@ -1142,9 +1142,7 @@ impl Step<Pasta> for FeeSeed {
 /// hand, and merging in a complement first lets division remove any leaf
 /// multiset the stamps in hand combine to express.
 ///
-/// Six online polynomials open once each at one shared challenge. The step
-/// requires the dividend and divisor to have matching anchors, enforced
-/// in-circuit.
+/// Six online polynomials open once each at one shared challenge.
 #[derive(Debug)]
 pub struct StampUnmerge;
 
