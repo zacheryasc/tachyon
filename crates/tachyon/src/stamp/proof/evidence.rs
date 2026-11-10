@@ -796,11 +796,12 @@ impl Step<Pasta> for EvidenceTreeOpen {
         let output = D::try_just(|| {
             let (carrier_profile, _) = witness.take();
             let (epoch, anchor_start, anchor_next, discriminant, _) = left.clone().take();
-            let bridge_hash = EpAffine::from_xy(*hash_x.take(), *hash_y.take()).ok_or_else(|| {
-                ragu_core::Error::InvalidWitness(
-                    "EvidenceTreeOpen: bridge hash is not on the curve".into(),
-                )
-            })?;
+            let bridge_hash =
+                EpAffine::from_xy(*hash_x.take(), *hash_y.take()).ok_or_else(|| {
+                    ragu_core::Error::InvalidWitness(
+                        "EvidenceTreeOpen: bridge hash is not on the curve".into(),
+                    )
+                })?;
             if bridge_hash.is_identity() {
                 return Err(ragu_core::Error::InvalidWitness(
                     "EvidenceTreeOpen: bridge hash is the identity".into(),

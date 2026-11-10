@@ -2,6 +2,7 @@
 
 #![allow(clippy::module_name_repetitions, reason = "intentional names")]
 #![allow(
+    clippy::multiple_inherent_impl,
     clippy::same_name_method,
     reason = "todo: take read/write off StampState"
 )]
