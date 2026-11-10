@@ -85,11 +85,19 @@ const FEE_DIGEST_DOMAIN: &[u8; 16] = b"Tachyon-FeeDg\0\0\0";
 /// A fee digest, $d_\mathsf{fee} = \mathsf{Poseidon}_\texttt{Tachyon-FeeDg}(
 /// x(\mathsf{cv}_\mathsf{feemax}), y(\mathsf{cv}_\mathsf{feemax}),
 /// \mathsf{fee})$.
+///
+/// # Panics
+///
+/// Panics if `cv_feemax` is the identity.
 #[must_use]
-pub fn fee_digest(cv_feemax: (Fp, Fp), fee: u64) -> Fp {
+pub fn fee_digest(cv_feemax: EpAffine, fee: u64) -> Fp {
+    #[expect(clippy::expect_used, reason = "callers reject the identity")]
+    let (x, y) = cv_feemax
+        .coordinates()
+        .expect("cv_feemax must not be the identity");
     *emulate(|driver| {
-        let x_element = Element::constant(driver, cv_feemax.0);
-        let y_element = Element::constant(driver, cv_feemax.1);
+        let x_element = Element::constant(driver, x);
+        let y_element = Element::constant(driver, y);
         let fee_element = Element::constant(driver, Fp::from(fee));
         with_driver::fee_digest(driver, (&x_element, &y_element), &fee_element)
     })
@@ -100,14 +108,30 @@ pub fn fee_digest(cv_feemax: (Fp, Fp), fee: u64) -> Fp {
 const ACTION_DIGEST_DOMAIN: &[u8; 16] = b"Tachyon-ActionDg";
 
 /// Derives an action digest from action fields.
+///
+/// # Panics
+///
+/// Panics if `cv` or `rk` is the identity.
 #[must_use]
-pub fn action_digest(cv: (Fp, Fp), rk: (Fp, Fp)) -> Fp {
+#[expect(
+    clippy::similar_names,
+    reason = "x and y coordinate elements of each point"
+)]
+pub fn action_digest(cv: EpAffine, rk: EpAffine) -> Fp {
+    #[expect(clippy::expect_used, reason = "callers reject the identity")]
+    let (cv_x, cv_y) = cv.coordinates().expect("cv must not be the identity");
+    #[expect(clippy::expect_used, reason = "callers reject the identity")]
+    let (rk_x, rk_y) = rk.coordinates().expect("rk must not be the identity");
     *emulate(|driver| {
-        let cv_x = Element::constant(driver, cv.0);
-        let cv_y = Element::constant(driver, cv.1);
-        let rk_x = Element::constant(driver, rk.0);
-        let rk_y = Element::constant(driver, rk.1);
-        with_driver::action_digest(driver, (&cv_x, &cv_y), (&rk_x, &rk_y))
+        let cv_x_element = Element::constant(driver, cv_x);
+        let cv_y_element = Element::constant(driver, cv_y);
+        let rk_x_element = Element::constant(driver, rk_x);
+        let rk_y_element = Element::constant(driver, rk_y);
+        with_driver::action_digest(
+            driver,
+            (&cv_x_element, &cv_y_element),
+            (&rk_x_element, &rk_y_element),
+        )
     })
     .value()
     .take()
@@ -116,11 +140,20 @@ pub fn action_digest(cv: (Fp, Fp), rk: (Fp, Fp)) -> Fp {
 const PAYMENT_KEY_DOMAIN: &[u8; 16] = b"Tachyon-PkDerive";
 
 /// Derives a payment key from a spend validating key and nullifier key.
+///
+/// # Panics
+///
+/// Panics if `ak` is the identity.
 #[must_use]
-pub fn payment_key(ak: (Fp, Fp), nk: Fp) -> Fp {
+pub fn payment_key(ak: EpAffine, nk: Fp) -> Fp {
+    #[expect(
+        clippy::expect_used,
+        reason = "ak = [ask]G for a PRF-derived ask is not the identity"
+    )]
+    let (x, y) = ak.coordinates().expect("ak must not be the identity");
     *emulate(|driver| {
-        let x_element = Element::constant(driver, ak.0);
-        let y_element = Element::constant(driver, ak.1);
+        let x_element = Element::constant(driver, x);
+        let y_element = Element::constant(driver, y);
         let nk_element = Element::constant(driver, nk);
         with_driver::payment_key(driver, (&x_element, &y_element), &nk_element)
     })

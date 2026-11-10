@@ -440,8 +440,7 @@ fn read_rejects_wrong_proof_size() {
     let rng = &mut StdRng::seed_from_u64(0);
     let wallet = WalletSim::random(rng);
     let anchor = Anchor::random(rng);
-    let (stamp, plan, fee_descriptor) =
-        build_output_stamp(application, rng, anchor, wallet.random_note(200));
+    let (stamp, ..) = build_output_stamp(application, rng, anchor, wallet.random_note(200));
     let compressed_size = <stamp::Compressed as stamp::Proof>::encoded_len();
     let uncompressed_size = <stamp::Uncompressed as stamp::Proof>::encoded_len();
 
@@ -466,14 +465,7 @@ fn read_rejects_wrong_proof_size() {
         assert_eq!(reader.len(), proof.len() - compressed_size);
     }
 
-    let compressed = stamp
-        .compress(
-            application,
-            rng,
-            &BTreeSet::from([plan.descriptor()]),
-            &BTreeSet::from([fee_descriptor]),
-        )
-        .unwrap();
+    let compressed = stamp.compress(application, rng).unwrap();
     {
         let proof = compressed.proof.to_bytes().unwrap();
         let mut bytes = Vec::new();
@@ -563,6 +555,25 @@ fn lift_moves_the_anchor_and_keeps_the_proof_valid() {
     assert_eq!(lifted.tachygram_set, stamp.tachygram_set);
     assert_eq!(lifted.tachygrams, stamp.tachygrams);
     assert!(lifted.verify_proof(application, rng, digests).unwrap());
+
+    let mut bytes = Vec::new();
+    stamp.write(&mut bytes).unwrap();
+    let decoded = ProofStamp::<stamp::Uncompressed>::read(&*bytes).unwrap();
+    let lifted_decoded = decoded
+        .lift(
+            application,
+            rng,
+            &BTreeSet::from([plan.descriptor()]),
+            &fees,
+            vec![span.clone()],
+        )
+        .unwrap();
+    assert_eq!(lifted_decoded.anchor, pool.block(lifted_to).anchor());
+    assert!(
+        lifted_decoded
+            .verify_proof(application, rng, digests)
+            .unwrap()
+    );
 
     let foreign = BTreeSet::from([random_action(rng).descriptor()]);
     assert_matches!(

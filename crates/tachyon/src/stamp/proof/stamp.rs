@@ -109,6 +109,15 @@ impl Header<Fp> for Stamp {
         allocator: &mut A,
         witness: DriverValue<D, Self::Data>,
     ) -> ragu_core::Result<Bound<'dr, D, Self::Output>> {
+        #[expect(
+            clippy::expect_used,
+            reason = "a bridge hash is the identity only under a discrete-log relation between its generators"
+        )]
+        let stamp_tg_commit = witness.as_ref().map(|fields| {
+            EpAffine::from(fields.0)
+                .coordinates()
+                .expect("bridge hash is not the identity")
+        });
         Ok(StampOutput {
             anchor: Element::alloc(
                 dr,
@@ -119,12 +128,12 @@ impl Header<Fp> for Stamp {
                 Element::alloc(
                     dr,
                     allocator,
-                    witness.as_ref().map(|fields| fields.0.coordinates().0),
+                    stamp_tg_commit.as_ref().map(|coordinates| coordinates.0),
                 )?,
                 Element::alloc(
                     dr,
                     allocator,
-                    witness.as_ref().map(|fields| fields.0.coordinates().1),
+                    stamp_tg_commit.as_ref().map(|coordinates| coordinates.1),
                 )?,
             ],
         })
@@ -136,7 +145,7 @@ impl Stamp {
     ///
     /// # Errors
     ///
-    /// Fails if the commitment or its bridge hash is the identity.
+    /// Fails if the commitment is the identity.
     pub fn header(
         commitment: TachygramSetCommit,
         anchor: Anchor,
@@ -158,8 +167,16 @@ impl Stamp {
         let [x, y] = oracles.bridge_hash().each_ref().map(Element::value);
         let anchor_value = anchor.value();
         let data = D::try_just(|| {
+            let stamp_tg_commit = EpAffine::from_xy(*x.take(), *y.take()).ok_or_else(|| {
+                ragu_core::Error::InvalidWitness("Stamp: bridge hash is not on the curve".into())
+            })?;
+            if stamp_tg_commit.is_identity() {
+                return Err(ragu_core::Error::InvalidWitness(
+                    "Stamp: bridge hash is the identity".into(),
+                ));
+            }
             Ok((
-                TachygramSetBridge::from_xy(*x.take(), *y.take())?,
+                TachygramSetBridge::from(stamp_tg_commit),
                 Anchor::from(*anchor_value.take()),
             ))
         })?;
@@ -658,17 +675,24 @@ impl Step<Pasta> for StampLift {
     type Left = Stamp;
     type Output = Stamp;
     type Right = AnchorSpan;
-    type Witness<'source> = ();
+    /// `(action_set,)`
+    type Witness<'source> = (ActionSetPoly,);
 
     const INDEX: Index = Index::new(11);
 
+    // O0 is the action set the caller states, where other pass-through steps
+    // copy their input's polynomial; the L0 = O0 opening holds it to the input.
+    // O1 copies L1. R0 supplies the span membership opening.
     fn polynomials(
         &self,
-        &(): &Self::Witness<'_>,
+        witness: &Self::Witness<'_>,
         left: HeaderInput<'_, Fp, Self::Left>,
         _: HeaderInput<'_, Fp, Self::Right>,
     ) -> ragu_core::Result<[Vec<Fp>; 2]> {
-        Ok([left.polynomials[0].clone(), left.polynomials[1].clone()])
+        Ok([
+            witness.0.as_ref().iter_coeffs().collect(),
+            left.polynomials[1].clone(),
+        ])
     }
 
     fn witness<'dr, 'source: 'dr, D: Driver<'dr, F = Fp>, const HEADER_SIZE: usize>(

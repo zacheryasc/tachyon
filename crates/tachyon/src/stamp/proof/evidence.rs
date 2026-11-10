@@ -28,12 +28,13 @@ use ragu_pcd::{
     step::{Encoded, HeaderInput, Index, Oracles, Slot, Step},
 };
 use ragu_primitives::{Boolean, Element, GadgetExt as _, allocator::Allocator, io::Write};
+use udon::curve::Affine as _;
 
 use super::qr::{QrBucket, QrBucketOutput};
 use crate::{
     constants::EVIDENCE_TREE_ARITY,
     digest::poseidon,
-    pasta::Fp,
+    pasta::{EpAffine, Fp},
     primitives::{
         Anchor, EpochIndex, EvidenceTreeRoot, QrDiscriminant, QrProfile, TachygramSetBridge,
         TachygramSetPoly,
@@ -610,7 +611,7 @@ impl Step<Pasta> for EvidenceTreeDescend {
     type Left = EvidenceTree;
     type Output = EvidenceTree;
     type Right = ();
-    /// `(path,)`
+    /// `(path)`
     type Witness<'source> = ([([bool; 2], [EvidenceTreeRoot; EVIDENCE_TREE_ARITY]); Self::LEVELS],);
 
     const INDEX: Index = Index::new(28);
@@ -795,13 +796,24 @@ impl Step<Pasta> for EvidenceTreeOpen {
         let output = D::try_just(|| {
             let (carrier_profile, _) = witness.take();
             let (epoch, anchor_start, anchor_next, discriminant, _) = left.clone().take();
+            let bridge_hash =
+                EpAffine::from_xy(*hash_x.take(), *hash_y.take()).ok_or_else(|| {
+                    ragu_core::Error::InvalidWitness(
+                        "EvidenceTreeOpen: bridge hash is not on the curve".into(),
+                    )
+                })?;
+            if bridge_hash.is_identity() {
+                return Err(ragu_core::Error::InvalidWitness(
+                    "EvidenceTreeOpen: bridge hash is the identity".into(),
+                ));
+            }
             Ok((
                 epoch,
                 anchor_start,
                 anchor_next,
                 discriminant,
                 carrier_profile,
-                TachygramSetBridge::from_xy(*hash_x.take(), *hash_y.take())?,
+                TachygramSetBridge::from(bridge_hash),
             ))
         })?;
         let expected = left_encoded.as_gadget().root.clone();
