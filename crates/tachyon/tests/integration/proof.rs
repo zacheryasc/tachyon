@@ -11,7 +11,7 @@ use udon::{curve::Projective as _, field::Field as _};
 use zcash_tachyon::{
     ActionSetPoly, Anchor, AnchorSetPoly, BlockHeight, EpochIndex, NfSeqPoly, Note, Tachygram,
     TachygramSetPoly, action,
-    constants::{EPOCH_MAX, EPOCH_SIZE},
+    constants::EPOCH_MAX,
     digest::poseidon,
     entropy::ActionEntropy,
     note,
@@ -29,20 +29,14 @@ use crate::fixtures::{
 };
 
 fn mine_cm_block(rng: &mut StdRng, pool: &mut PoolSim, cm: note::Commitment) -> BlockHeight {
-    pool.mine(random_block_with(rng, &[vec![cm]], 4));
+    pool.mine(random_block_with(rng, &[vec![cm]], 1));
     pool.height()
 }
 
-fn mine_through(rng: &mut StdRng, pool: &mut PoolSim, height: BlockHeight) {
-    while pool.height() < height {
-        pool.advance(1, |_| random_block(rng, 1, 2));
-    }
-}
-
 fn pool_closing_epoch_zero(rng: &mut StdRng, note: &Note) -> PoolSim {
-    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
+    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 1));
     mine_cm_block(rng, &mut pool, note.commitment());
-    mine_through(rng, &mut pool, EpochIndex::new(1).first_block());
+    pool.mine_through(rng, EpochIndex::new(1).first_block());
     pool
 }
 
@@ -102,23 +96,23 @@ fn spendable_init_rejects_tg_absent() {
     );
     let absent_tg = Tachygram::random(rng);
 
-    assert_matches!(
-        application
-            .fuse(
-                rng,
-                spendable::SpendableInit,
-                witness::spendable_init(
-                    (*nf_header.data(), ()),
-                    Anchor::default(),
-                    &[absent_tg],
-                    EpochIndex::new(0),
-                ),
-                nf_header,
-                application.bootstrap_proof().clone().carry::<()>(()),
-            )
-            .err(),
-        Some(ragu_core::Error::InvalidWitness(err))
-            if err.to_string() == "SpendableInit: commitment not in set"
+    let (forged, ()) = application
+        .fuse(
+            rng,
+            spendable::SpendableInit,
+            witness::spendable_init(
+                (*nf_header.data(), ()),
+                Anchor::default(),
+                &[absent_tg],
+                EpochIndex::new(0),
+            ),
+            nf_header,
+            application.bootstrap_proof().clone().carry::<()>(()),
+        )
+        .unwrap();
+    assert!(
+        !application.verify_uncompressed(&forged, &mut *rng).unwrap(),
+        "SpendableInit: commitment not in set",
     );
 }
 
@@ -126,8 +120,8 @@ fn spendable_init_rejects_tg_absent() {
 fn unspent_fuse_joins_only_adjacent_matching_segments() {
     let application = &*application();
     let rng = &mut StdRng::seed_from_u64(0);
-    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
-    mine_through(rng, &mut pool, EpochIndex::new(3).last_block());
+    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 2));
+    pool.mine_through(rng, EpochIndex::new(3).last_block());
     let nf: [Nullifier; 4] =
         array::from_fn(|_| Nullifier::from(Fp::random(|bytes| rng.fill_bytes(bytes))));
     let at = |epoch: EpochIndex| nf[usize::try_from(u32::from(epoch)).unwrap()];
@@ -147,18 +141,18 @@ fn unspent_fuse_joins_only_adjacent_matching_segments() {
         at,
         (EpochIndex::new(2), EpochIndex::new(3)),
     );
-    assert_matches!(
-        application
-            .fuse(
-                rng,
-                pool::UnspentFuse,
-                witness::unspent_fuse((*first.data(), *third.data()), &[nf0], &[nf2]),
-                first,
-                third,
-            )
-            .err(),
-        Some(ragu_core::Error::InvalidWitness(err))
-            if err.to_string() == "UnspentFuse: left.anchor_next must equal right.anchor_start"
+    let (gapped, ()) = application
+        .fuse(
+            rng,
+            pool::UnspentFuse,
+            witness::unspent_fuse((*first.data(), *third.data()), &[nf0], &[nf2]),
+            first,
+            third,
+        )
+        .unwrap();
+    assert!(
+        !application.verify_uncompressed(&gapped, &mut *rng).unwrap(),
+        "UnspentFuse: left.anchor_next must equal right.anchor_start",
     );
 
     let left = build_unspent_pcd_over_epochs(
@@ -175,21 +169,23 @@ fn unspent_fuse_joins_only_adjacent_matching_segments() {
         at,
         (EpochIndex::new(2), EpochIndex::new(4)),
     );
-    assert_matches!(
-        application
-            .fuse(
-                rng,
-                pool::UnspentFuse,
-                {
-                    let mut witness = witness::unspent_fuse((*left.data(), *right.data()), &[nf0, nf1], &[nf2, nf3]);
-                    witness.0 = NfSeqPoly::new(EpochIndex::new(2), &[nf2, nf3]);
-                    witness
-                },
-                left.clone(),
-                right.clone(),
-            )
-            .err(),
-        Some(ragu_core::Error::InvalidWitness(err)) if err.to_string() == "UnspentFuse: combined is not the concatenation of the halves"
+    let (forged, ()) = application
+        .fuse(
+            rng,
+            pool::UnspentFuse,
+            {
+                let mut witness =
+                    witness::unspent_fuse((*left.data(), *right.data()), &[nf0, nf1], &[nf2, nf3]);
+                witness.0 = NfSeqPoly::new(EpochIndex::new(2), &[nf2, nf3]);
+                witness
+            },
+            left.clone(),
+            right.clone(),
+        )
+        .unwrap();
+    assert!(
+        !application.verify_uncompressed(&forged, &mut *rng).unwrap(),
+        "UnspentFuse: combined is not the concatenation of the halves",
     );
 
     let (start, end) = (left.data().0, right.data().3);
@@ -210,13 +206,14 @@ fn unspent_fuse_joins_only_adjacent_matching_segments() {
         fused.commitments()[0],
         Eq::from(NfSeqPoly::new(EpochIndex::new(0), &nf).commit()).to_affine()
     );
+    assert!(application.verify_uncompressed(&fused, rng).unwrap());
 }
 
 #[test]
 fn anchor_span_holds_the_anchors_its_folds_produce() {
     let application = &*application();
     let rng = &mut StdRng::seed_from_u64(0);
-    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
+    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 1));
     pool.advance(2, |_| random_block(rng, 1, 2));
 
     let (span, members) =
@@ -229,6 +226,7 @@ fn anchor_span_holds_the_anchors_its_folds_produce() {
         span.commitments()[0],
         Eq::from(AnchorSetPoly::from_iter(members).commit()).to_affine()
     );
+    assert!(application.verify_uncompressed(&span, &mut *rng).unwrap());
 }
 
 #[test]
@@ -236,7 +234,7 @@ fn stamp_lift_accepts_only_anchors_the_span_holds() {
     let application = &*application();
     let rng = &mut StdRng::seed_from_u64(0);
     let user = WalletSim::new(shared_sk());
-    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
+    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 1));
     pool.advance(1, |_| random_block(rng, 1, 3));
 
     let (span, members) =
@@ -263,26 +261,27 @@ fn stamp_lift_accepts_only_anchors_the_span_holds() {
         let stamp_pcd = stamp
             .proof
             .carry(stamp::Stamp::header(stamp.tachygram_set, stamp_anchor).unwrap());
-        let lifted = application.fuse(
-            rng,
-            stamp::StampLift,
-            witness::stamp_lift(
-                (*stamp_pcd.data(), *span.data()),
-                ActionSetPoly::from_iter([
-                    plan.digest().unwrap(),
-                    fee_descriptor.digest().unwrap(),
-                ]),
-            ),
-            stamp_pcd,
-            span.clone(),
-        );
+        let (lifted, ()) = application
+            .fuse(
+                rng,
+                stamp::StampLift,
+                witness::stamp_lift(
+                    (*stamp_pcd.data(), *span.data()),
+                    ActionSetPoly::from_iter([
+                        plan.digest().unwrap(),
+                        fee_descriptor.digest().unwrap(),
+                    ]),
+                ),
+                stamp_pcd,
+                span.clone(),
+            )
+            .unwrap();
+        let verified = application.verify_uncompressed(&lifted, &mut *rng).unwrap();
         if let Some(message) = expected {
-            assert_matches!(
-                lifted.err(),
-                Some(ragu_core::Error::InvalidWitness(err)) if err.to_string() == message
-            );
+            assert!(!verified, "{message}");
         } else {
-            assert_eq!(lifted.unwrap().0.data().1, anchor_end);
+            assert!(verified);
+            assert_eq!(lifted.data().1, anchor_end);
         }
     }
 }
@@ -291,7 +290,7 @@ fn stamp_lift_accepts_only_anchors_the_span_holds() {
 fn anchor_span_fuse_rejects_invalid_compositions() {
     let application = &*application();
     let rng = &mut StdRng::seed_from_u64(0);
-    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
+    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 1));
     pool.advance(2, |_| random_block(rng, 1, 1));
 
     let (left, left_members) =
@@ -334,11 +333,12 @@ fn anchor_span_fuse_rejects_invalid_compositions() {
     ]
     .into_boxed_slice()
     {
-        assert_matches!(
-            application
-                .fuse(rng, pool::AnchorSpanFuse, fuse_witness, first, second)
-                .err(),
-            Some(ragu_core::Error::InvalidWitness(err)) if err.to_string() == expected
+        let (forged, ()) = application
+            .fuse(rng, pool::AnchorSpanFuse, fuse_witness, first, second)
+            .unwrap();
+        assert!(
+            !application.verify_uncompressed(&forged, &mut *rng).unwrap(),
+            "{expected}",
         );
     }
 }
@@ -349,7 +349,7 @@ fn spend_rejects_invalid_note() {
     let rng = &mut StdRng::seed_from_u64(0);
     let user = WalletSim::random(rng);
     let other = WalletSim::random(rng);
-    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
+    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 1));
     let note = user.random_note(500);
     let height = mine_cm_block(rng, &mut pool, note.commitment());
     let spendable_pcd = user.spendable_init(application, rng, &note, &pool, height);
@@ -361,34 +361,43 @@ fn spend_rejects_invalid_note() {
     };
     let secret_pcd = user.secret_pcd(application, rng, phantom);
     let rcv = value::Trapdoor::random(rng);
-    assert_matches!(
-        application
-            .fuse(
-                rng,
-                spend::SpendBind,
-                witness::spend_bind((*spendable_pcd.data(), *secret_pcd.data()), rcv),
-                spendable_pcd.clone(),
-                secret_pcd,
-            )
-            .err(),
-        Some(ragu_core::Error::InvalidWitness(err))
-            if err.to_string() == "SpendBind: secret does not match note"
+    let (forged_bind, ()) = application
+        .fuse(
+            rng,
+            spend::SpendBind,
+            witness::spend_bind((*spendable_pcd.data(), *secret_pcd.data()), rcv),
+            spendable_pcd.clone(),
+            secret_pcd,
+        )
+        .unwrap();
+    assert!(
+        !application
+            .verify_uncompressed(&forged_bind, &mut *rng)
+            .unwrap(),
+        "SpendBind: secret does not match note",
     );
 
     let bind_pcd = honest_spend_bind(application, rng, &user, &note, spendable_pcd);
-    let theta = ActionEntropy::random(rng);
-    assert_matches!(
+    assert!(
         application
-            .fuse(
-                rng,
-                stamp::SpendAction,
-                witness::spend_action((*bind_pcd.data(), ()), theta, other.pak),
-                bind_pcd,
-                application.bootstrap_proof().clone().carry::<()>(()),
-            )
-            .err(),
-        Some(ragu_core::Error::InvalidWitness(err))
-            if err.to_string() == "SpendAction: pak not related to note"
+            .verify_uncompressed(&bind_pcd, &mut *rng)
+            .unwrap()
+    );
+    let theta = ActionEntropy::random(rng);
+    let (forged_action, ()) = application
+        .fuse(
+            rng,
+            stamp::SpendAction,
+            witness::spend_action((*bind_pcd.data(), ()), theta, other.pak),
+            bind_pcd,
+            application.bootstrap_proof().clone().carry::<()>(()),
+        )
+        .unwrap();
+    assert!(
+        !application
+            .verify_uncompressed(&forged_action, &mut *rng)
+            .unwrap(),
+        "SpendAction: pak not related to note",
     );
 }
 
@@ -414,7 +423,7 @@ fn step_accepts_zero_value_note() {
         .unwrap();
     let theta = ActionEntropy::random(rng);
     let anchor = Anchor::random(rng);
-    application
+    let (output_action, ()) = application
         .fuse(
             rng,
             stamp::OutputAction,
@@ -423,13 +432,18 @@ fn step_accepts_zero_value_note() {
             application.bootstrap_proof().clone().carry::<()>(()),
         )
         .unwrap();
+    assert!(
+        application
+            .verify_uncompressed(&output_action, &mut *rng)
+            .unwrap()
+    );
 
-    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
+    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 1));
     let zero_spend = user.random_note(0);
     let height = mine_cm_block(rng, &mut pool, zero_spend.commitment());
     let spendable_pcd = user.spendable_init(application, rng, &zero_spend, &pool, height);
     let spend_bind = honest_spend_bind(application, rng, &user, &zero_spend, spendable_pcd);
-    application
+    let (spend_action, ()) = application
         .fuse(
             rng,
             stamp::SpendAction,
@@ -438,6 +452,11 @@ fn step_accepts_zero_value_note() {
             application.bootstrap_proof().clone().carry::<()>(()),
         )
         .unwrap();
+    assert!(
+        application
+            .verify_uncompressed(&spend_action, &mut *rng)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -447,7 +466,7 @@ fn spend_action_commits_to_the_plan_and_the_nullifier_pair() {
     let user = WalletSim::new(shared_sk());
     let note = user.random_note(500);
     let mk = user.pak.nk.derive_note_private(note.psi);
-    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
+    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 1));
     let height = mine_cm_block(rng, &mut pool, note.commitment());
     let spend_epoch = height.epoch();
     let rcv = value::Trapdoor::random(rng);
@@ -486,17 +505,18 @@ fn spend_action_commits_to_the_plan_and_the_nullifier_pair() {
             "SpendAction: action set does not commit to the action",
         ),
     ] {
-        assert_matches!(
-            application
-                .fuse(
-                    rng,
-                    stamp::SpendAction,
-                    action_witness,
-                    bind_pcd.clone(),
-                    application.bootstrap_proof().clone().carry::<()>(()),
-                )
-                .err(),
-            Some(ragu_core::Error::InvalidWitness(err)) if err.to_string() == expected
+        let (forged, ()) = application
+            .fuse(
+                rng,
+                stamp::SpendAction,
+                action_witness,
+                bind_pcd.clone(),
+                application.bootstrap_proof().clone().carry::<()>(()),
+            )
+            .unwrap();
+        assert!(
+            !application.verify_uncompressed(&forged, &mut *rng).unwrap(),
+            "{expected}",
         );
     }
 
@@ -509,6 +529,7 @@ fn spend_action_commits_to_the_plan_and_the_nullifier_pair() {
             application.bootstrap_proof().clone().carry::<()>(()),
         )
         .unwrap();
+    assert!(application.verify_uncompressed(&pcd, &mut *rng).unwrap());
     let plan = action::Plan::spend(note, theta, rcv, |alpha| {
         user.pak.ak.derive_action_public(&alpha)
     });
@@ -535,13 +556,13 @@ fn lift_crosses_a_stampless_epoch() {
     let application = &*application();
     let rng = &mut StdRng::seed_from_u64(0);
     let user = WalletSim::new(shared_sk());
-    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
+    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 1));
     let note = user.random_note(300);
     let mk = user.pak.nk.derive_note_private(note.psi);
     mine_cm_block(rng, &mut pool, note.commitment());
     let (epoch1, epoch2, epoch3) = (EpochIndex::new(1), EpochIndex::new(2), EpochIndex::new(3));
 
-    mine_through(rng, &mut pool, epoch1.last_block());
+    pool.mine_through(rng, epoch1.last_block());
     while pool.height() < epoch2.last_block() {
         pool.advance(1, |_| Vec::new());
     }
@@ -559,6 +580,7 @@ fn lift_crosses_a_stampless_epoch() {
     let lifted = user.lift(application, rng, spendable, arbitrary, &note);
     assert_eq!(lifted.data().1, epoch3);
     assert_eq!(lifted.data().2, pool.block(epoch3.first_block()).prev);
+    assert!(application.verify_uncompressed(&lifted, &mut *rng).unwrap());
 }
 
 #[test]
@@ -569,11 +591,11 @@ fn unspent_bind_rejects_a_forged_member() {
     let note = user.random_note(500);
     let pool = pool_closing_epoch_zero(rng, &note);
 
-    let forged = Nullifier::from(Fp::random(|bytes| rng.fill_bytes(bytes)));
+    let forged_nf = Nullifier::from(Fp::random(|bytes| rng.fill_bytes(bytes)));
     let (epoch0, epoch1) = (EpochIndex::new(0), EpochIndex::new(1));
     let nf = |epoch: EpochIndex| {
         if epoch == epoch0 {
-            forged
+            forged_nf
         } else {
             user.pak
                 .nk
@@ -588,15 +610,15 @@ fn unspent_bind_rejects_a_forged_member() {
     let witness = witness::unspent_bind(
         (*unspent.data(), *range.data()),
         &user.covering_window(&note, &range),
-        &[forged],
+        &[forged_nf],
     );
 
-    assert_matches!(
-        application
-            .fuse(rng, pool::UnspentBind, witness, unspent, range)
-            .err(),
-        Some(ragu_core::Error::InvalidWitness(err))
-            if err.to_string() == "UnspentBind: sequence does not match the derivation"
+    let (forged, ()) = application
+        .fuse(rng, pool::UnspentBind, witness, unspent, range)
+        .unwrap();
+    assert!(
+        !application.verify_uncompressed(&forged, &mut *rng).unwrap(),
+        "UnspentBind: sequence does not match the derivation",
     );
 }
 
@@ -632,6 +654,7 @@ fn unspent_bind_window_may_end_at_the_final_epoch() {
         complement_seq.commit(),
         NfSeqPoly::new(epoch_end, &[mk.derive_nullifier(epoch_end)]).commit()
     );
+    assert!(application.verify_uncompressed(&range, &mut *rng).unwrap());
 }
 
 #[test]
@@ -725,17 +748,18 @@ fn unspent_bind_rejects_mismatched_sequences() {
     ]
     .into_boxed_slice()
     {
-        assert_matches!(
-            application
-                .fuse(
-                    rng,
-                    pool::UnspentBind,
-                    bind_witness,
-                    unspent.clone(),
-                    bind_range,
-                )
-                .err(),
-            Some(ragu_core::Error::InvalidWitness(err)) if err.to_string() == expected
+        let (forged, ()) = application
+            .fuse(
+                rng,
+                pool::UnspentBind,
+                bind_witness,
+                unspent.clone(),
+                bind_range,
+            )
+            .unwrap();
+        assert!(
+            !application.verify_uncompressed(&forged, &mut *rng).unwrap(),
+            "{expected}",
         );
     }
 }
@@ -764,12 +788,12 @@ fn unspent_bind_rejects_uncovered_end() {
     );
     witness.0 = NfSeqPoly::new(EpochIndex::new(0), &[]);
 
-    assert_matches!(
-        application
-            .fuse(rng, pool::UnspentBind, witness, unspent, range)
-            .err(),
-        Some(ragu_core::Error::InvalidWitness(err))
-            if err.to_string() == "UnspentBind: sequence does not match the derivation"
+    let (forged, ()) = application
+        .fuse(rng, pool::UnspentBind, witness, unspent, range)
+        .unwrap();
+    assert!(
+        !application.verify_uncompressed(&forged, &mut *rng).unwrap(),
+        "UnspentBind: sequence does not match the derivation",
     );
 }
 
@@ -778,7 +802,7 @@ fn spendable_lift_rejects_mismatched_segments() {
     let application = &*application();
     let rng = &mut StdRng::seed_from_u64(0);
     let user = WalletSim::new(shared_sk());
-    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
+    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 1));
     let note = user.random_note(500);
     let mk = user.pak.nk.derive_note_private(note.psi);
     let phantom = Note {
@@ -788,7 +812,7 @@ fn spendable_lift_rejects_mismatched_segments() {
     };
     mine_cm_block(rng, &mut pool, note.commitment());
     let (epoch1, epoch2, epoch3) = (EpochIndex::new(1), EpochIndex::new(2), EpochIndex::new(3));
-    mine_through(rng, &mut pool, epoch2.last_block());
+    pool.mine_through(rng, epoch2.last_block());
     let spendable = user.spendable_at(application, rng, &pool, &note, epoch1);
 
     for (unspent, expected) in [
@@ -827,17 +851,18 @@ fn spendable_lift_rejects_mismatched_segments() {
             "SpendableLift: segment does not start at the lineage epoch",
         ),
     ] {
-        assert_matches!(
-            application
-                .fuse(
-                    rng,
-                    spendable::SpendableLift,
-                    (),
-                    spendable.clone(),
-                    unspent,
-                )
-                .err(),
-            Some(ragu_core::Error::InvalidWitness(err)) if err.to_string() == expected
+        let (forged, ()) = application
+            .fuse(
+                rng,
+                spendable::SpendableLift,
+                (),
+                spendable.clone(),
+                unspent,
+            )
+            .unwrap();
+        assert!(
+            !application.verify_uncompressed(&forged, &mut *rng).unwrap(),
+            "{expected}",
         );
     }
 }
@@ -864,6 +889,7 @@ fn note_seed_derives_the_payment_key_from_pak() {
         Fp::from(stranger.pak.derive_payment_key())
     );
     assert_ne!(cm, note.commitment());
+    assert!(application.verify_uncompressed(&secret, &mut *rng).unwrap());
 }
 
 #[test]
@@ -875,7 +901,6 @@ fn nullifier_derive_rejects_invalid_windows() {
     let other = user.random_note(700);
     let secret = user.secret_pcd(application, rng, note);
     let (cm, ..) = *secret.data();
-    let past_the_end = EpochIndex::new(EPOCH_MAX - 3);
 
     for (derive_witness, expected) in [
         (
@@ -894,30 +919,40 @@ fn nullifier_derive_rejects_invalid_windows() {
             },
             "NullifierDerive: epoch_start is not group-aligned",
         ),
-        (
-            {
-                let mut witness =
-                    witness::nullifier_derive((*secret.data(), ()), EpochIndex::new(0));
-                witness.0 = past_the_end;
-                witness.1 = NfSeqPoly::new(past_the_end, &[]);
-                witness
-            },
-            "NullifierDerive: window exceeds the epoch range",
-        ),
     ] {
-        assert_matches!(
-            application
-                .fuse(
-                    rng,
-                    delegation::NullifierDerive,
-                    derive_witness,
-                    secret.clone(),
-                    application.bootstrap_proof().clone().carry::<()>(()),
-                )
-                .err(),
-            Some(ragu_core::Error::InvalidWitness(err)) if err.to_string() == expected
+        let (forged, ()) = application
+            .fuse(
+                rng,
+                delegation::NullifierDerive,
+                derive_witness,
+                secret.clone(),
+                application.bootstrap_proof().clone().carry::<()>(()),
+            )
+            .unwrap();
+        assert!(
+            !application.verify_uncompressed(&forged, &mut *rng).unwrap(),
+            "{expected}",
         );
     }
+
+    let past_the_end = EpochIndex::new(EPOCH_MAX - 3);
+    let mut past_the_end_witness =
+        witness::nullifier_derive((*secret.data(), ()), EpochIndex::new(0));
+    past_the_end_witness.0 = past_the_end;
+    past_the_end_witness.1 = NfSeqPoly::new(past_the_end, &[]);
+    assert_matches!(
+        application
+            .fuse(
+                rng,
+                delegation::NullifierDerive,
+                past_the_end_witness,
+                secret,
+                application.bootstrap_proof().clone().carry::<()>(()),
+            )
+            .err(),
+        Some(ragu_core::Error::InvalidWitness(err))
+            if err.to_string() == "epoch is above EPOCH_MAX"
+    );
 }
 
 #[test]
@@ -955,11 +990,12 @@ fn nullifier_fuse_rejects_unjoinable_ranges() {
             &user.covering_window(&note, &left),
             &user.covering_window(&right_note, &right),
         );
-        assert_matches!(
-            application
-                .fuse(rng, delegation::NullifierFuse, fuse_witness, left, right)
-                .err(),
-            Some(ragu_core::Error::InvalidWitness(err)) if err.to_string() == expected
+        let (forged, ()) = application
+            .fuse(rng, delegation::NullifierFuse, fuse_witness, left, right)
+            .unwrap();
+        assert!(
+            !application.verify_uncompressed(&forged, &mut *rng).unwrap(),
+            "{expected}",
         );
     }
 }
@@ -972,8 +1008,8 @@ fn spend_bind_derives_a_pair_across_a_group_boundary() {
     let note = user.random_note(500);
     let mk = user.pak.nk.derive_note_private(note.psi);
 
-    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
-    mine_through(rng, &mut pool, EpochIndex::new(3).first_block());
+    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 1));
+    pool.mine_through(rng, EpochIndex::new(3).first_block());
     let init_height = mine_cm_block(rng, &mut pool, note.commitment());
     let epoch = init_height.epoch();
     assert_eq!(epoch, EpochIndex::new(3));
@@ -991,6 +1027,11 @@ fn spend_bind_derives_a_pair_across_a_group_boundary() {
             mk.derive_nullifier(EpochIndex::new(4)),
             anchor,
         )
+    );
+    assert!(
+        application
+            .verify_uncompressed(&bind_pcd, &mut *rng)
+            .unwrap()
     );
 }
 
@@ -1046,17 +1087,18 @@ fn output_action_commits_to_the_plan_and_the_note_pair() {
             "OutputAction: action set does not commit to the action",
         ),
     ] {
-        assert_matches!(
-            application
-                .fuse(
-                    rng,
-                    stamp::OutputAction,
-                    action_witness,
-                    bind_pcd.clone(),
-                    application.bootstrap_proof().clone().carry::<()>(()),
-                )
-                .err(),
-            Some(ragu_core::Error::InvalidWitness(err)) if err.to_string() == expected
+        let (forged, ()) = application
+            .fuse(
+                rng,
+                stamp::OutputAction,
+                action_witness,
+                bind_pcd.clone(),
+                application.bootstrap_proof().clone().carry::<()>(()),
+            )
+            .unwrap();
+        assert!(
+            !application.verify_uncompressed(&forged, &mut *rng).unwrap(),
+            "{expected}",
         );
     }
 
@@ -1069,6 +1111,7 @@ fn output_action_commits_to_the_plan_and_the_note_pair() {
             application.bootstrap_proof().clone().carry::<()>(()),
         )
         .unwrap();
+    assert!(application.verify_uncompressed(&pcd, &mut *rng).unwrap());
     assert_eq!(*pcd.data(), anchor);
     assert_eq!(
         pcd.commitments()[..2],
@@ -1159,12 +1202,12 @@ fn unspent_bind_rejects_a_wrong_epoch_member() {
     let application = &*application();
     let rng = &mut StdRng::seed_from_u64(0);
     let user = WalletSim::new(shared_sk());
-    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
+    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 1));
     let note = user.random_note(500);
     let mk = user.pak.nk.derive_note_private(note.psi);
     mine_cm_block(rng, &mut pool, note.commitment());
     let (epoch0, epoch1) = (EpochIndex::new(0), EpochIndex::new(1));
-    mine_through(rng, &mut pool, epoch1.last_block());
+    pool.mine_through(rng, epoch1.last_block());
 
     let nf = |epoch: EpochIndex| mk.derive_nullifier(if epoch == epoch1 { epoch0 } else { epoch });
     let unspent =
@@ -1180,18 +1223,12 @@ fn unspent_bind_rejects_a_wrong_epoch_member() {
         &[nf(epoch1)],
     );
     witness.0 = complement_seq;
-    assert_matches!(
-        application
-            .fuse(
-                rng,
-                pool::UnspentBind,
-                witness,
-                unspent,
-                range,
-            )
-            .err(),
-        Some(ragu_core::Error::InvalidWitness(err))
-            if err.to_string() == "UnspentBind: sequence does not match the derivation"
+    let (forged, ()) = application
+        .fuse(rng, pool::UnspentBind, witness, unspent, range)
+        .unwrap();
+    assert!(
+        !application.verify_uncompressed(&forged, &mut *rng).unwrap(),
+        "UnspentBind: sequence does not match the derivation",
     );
 }
 
@@ -1200,20 +1237,12 @@ fn multi_window_span_binds_once() {
     let application = &*application();
     let rng = &mut StdRng::seed_from_u64(0);
     let user = WalletSim::new(shared_sk());
-    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
+    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 1));
     let note = user.random_note(500);
     mine_cm_block(rng, &mut pool, note.commitment());
 
     let last_epoch = NF_DERIVATION_WIDTH as u32 + 1;
-    let target_height = BlockHeight(last_epoch * EPOCH_SIZE);
-    while pool.height() < target_height {
-        let publish = pool.height().0 % EPOCH_SIZE == EPOCH_SIZE - 1;
-        if publish {
-            pool.advance(1, |_| random_block(rng, 1, 2));
-        } else {
-            pool.advance(1, |_| Vec::new());
-        }
-    }
+    pool.mine_through(rng, EpochIndex::new(last_epoch).first_block());
 
     let arbitrary = build_unspent_pcd_over_epochs(
         application,
@@ -1232,5 +1261,10 @@ fn multi_window_span_binds_once() {
     assert_eq!(
         (unspent.data().2, unspent.data().3),
         (EpochIndex::new(0), EpochIndex::new(last_epoch))
+    );
+    assert!(
+        application
+            .verify_uncompressed(&unspent, &mut *rng)
+            .unwrap()
     );
 }

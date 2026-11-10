@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use alloc::{collections::BTreeSet, string::ToString as _, vec};
+use alloc::{collections::BTreeSet, vec};
 use core::assert_matches;
 
 use ragu_circuits::polynomials::ProductionRank;
@@ -126,17 +126,18 @@ fn fee_fuse_binds_its_sets() {
             "FeeFuse: output tachygram set must be the product of left and fee tachygram sets",
         ),
     ] {
-        assert_matches!(
-            application
-                .fuse(
-                    rng,
-                    FeeFuse,
-                    corrupt,
-                    left.stamp.proof.clone().carry::<Actions>(anchor),
-                    application.bootstrap_proof().clone().carry::<()>(()),
-                )
-                .err(),
-            Some(ragu_core::Error::InvalidWitness(err)) if err.to_string() == expected
+        let (forged, ()) = application
+            .fuse(
+                rng,
+                FeeFuse,
+                corrupt,
+                left.stamp.proof.clone().carry::<Actions>(anchor),
+                application.bootstrap_proof().clone().carry::<()>(()),
+            )
+            .unwrap();
+        assert!(
+            !application.verify_uncompressed(&forged, &mut *rng).unwrap(),
+            "{expected}"
         );
     }
 }
@@ -182,16 +183,18 @@ fn fee_fuse_slack_boundaries() {
         if maximum < MAX_MONEY {
             let mut corrupt = witness;
             corrupt.1 = value::Positive::try_from(maximum + 1).unwrap();
-            assert_matches!(
-                application.fuse(
+            let (forged, ()) = application
+                .fuse(
                     rng,
                     FeeFuse,
                     corrupt,
                     left_pcd.clone(),
                     application.bootstrap_proof().clone().carry::<()>(()),
-                ).err(),
-                Some(ragu_core::Error::InvalidWitness(err))
-                    if err.to_string() == "FeeFuse: change is out of range"
+                )
+                .unwrap();
+            assert!(
+                !application.verify_uncompressed(&forged, &mut *rng).unwrap(),
+                "FeeFuse: change is out of range"
             );
         }
     }
@@ -235,17 +238,19 @@ fn fee_is_chosen_after_signing_up_to_the_max_and_applies_once() {
         &digests,
         &once.stamp.tachygrams,
     );
-    assert_matches!(
-        application
-            .fuse(
-                rng,
-                FeeFuse,
-                repeated_witness.clone(),
-                once.stamp.proof.clone().carry::<Actions>(anchor),
-                application.bootstrap_proof().clone().carry::<()>(()),
-            )
-            .err(),
-        Some(ragu_core::Error::InvalidWitness(_))
+    let (repeated, ()) = application
+        .fuse(
+            rng,
+            FeeFuse,
+            repeated_witness.clone(),
+            once.stamp.proof.clone().carry::<Actions>(anchor),
+            application.bootstrap_proof().clone().carry::<()>(()),
+        )
+        .unwrap();
+    assert!(
+        !application
+            .verify_uncompressed(&repeated, &mut *rng)
+            .unwrap()
     );
     let mut twice_stamp = once.stamp.clone();
     twice_stamp.tachygram_set = repeated_witness.2.1.commit();
@@ -531,7 +536,7 @@ fn fee_bearing_aggregates_merge_and_lift() {
         )
         .unwrap();
 
-    pool.mine(random_block(rng, 1, 2));
+    pool.mine(random_block(rng, 1, 1));
     let span = build_lift_span(application, rng, &pool, pool.height()..=pool.height());
     let lifted = left
         .lift(
@@ -691,9 +696,10 @@ fn fee_seed_binds_its_singletons_and_header() {
             "FeeSeed: fee tachygram set does not commit to the fee change note",
         ),
     ] {
-        assert_matches!(
-            application.seed(rng, FeeSeed, corrupt).err(),
-            Some(ragu_core::Error::InvalidWitness(err)) if err.to_string() == expected
+        let (forged, ()) = application.seed(rng, FeeSeed, corrupt).unwrap();
+        assert!(
+            !application.verify_uncompressed(&forged, &mut *rng).unwrap(),
+            "{expected}"
         );
     }
 

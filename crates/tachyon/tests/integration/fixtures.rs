@@ -1,7 +1,12 @@
 extern crate alloc;
 
 use alloc::{collections::BTreeMap, vec, vec::Vec};
-use core::{cell::RefCell, iter, mem, ops::RangeInclusive};
+use core::{
+    cell::RefCell,
+    iter, mem,
+    ops::{Deref, RangeInclusive},
+};
+use std::sync::{Mutex, OnceLock};
 
 use ragu_circuits::polynomials::{ProductionRank, Rank as _};
 use ragu_core::{
@@ -42,8 +47,37 @@ use zcash_tachyon::{
     value, witness,
 };
 
-pub fn application() -> Box<Application<'static, Pasta, ProductionRank, HEADER_SIZE>> {
-    stamp::proof::new_application().unwrap()
+static APPLICATIONS: Mutex<Vec<Box<Application<'static, Pasta, ProductionRank, HEADER_SIZE>>>> =
+    Mutex::new(Vec::new());
+
+/// An [`Application`] checked out of [`APPLICATIONS`] for one test; dropping
+/// it returns the instance to the pool.
+pub struct ApplicationLease(Option<Box<Application<'static, Pasta, ProductionRank, HEADER_SIZE>>>);
+
+impl Deref for ApplicationLease {
+    type Target = Application<'static, Pasta, ProductionRank, HEADER_SIZE>;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_deref().unwrap()
+    }
+}
+
+impl Drop for ApplicationLease {
+    fn drop(&mut self) {
+        APPLICATIONS.lock().unwrap().extend(self.0.take());
+    }
+}
+
+/// Leases a pooled [`Application`], building one when the pool is empty.
+///
+/// A test takes at most one lease, after reading any shared fixture (whose
+/// initializer takes its own), so the pool never holds more instances than
+/// the harness has threads. The mutex is held only to pop and push.
+pub fn application() -> ApplicationLease {
+    let pooled = APPLICATIONS.lock().unwrap().pop();
+    ApplicationLease(Some(
+        pooled.unwrap_or_else(|| stamp::proof::new_application().unwrap()),
+    ))
 }
 
 pub(crate) struct WithPolynomials<S>(pub S, pub [Vec<Fp>; 2]);
@@ -216,28 +250,32 @@ pub fn build_output_stamp_with_fee<RNG: CryptoRng>(
     (stamp, plan, max_fee_note)
 }
 
-pub fn build_autonome<RNG: CryptoRng>(
-    application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
-    rng: &mut RNG,
-    wallet: &WalletSim,
-    spend_value: u64,
-    output_value: u64,
-) -> Bundle<ProofStamp<stamp::Uncompressed>> {
-    let spend_note = wallet.random_note(spend_value);
-    let output_note = wallet.random_note(output_value);
-    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
-    let stamps_cms = vec![vec![spend_note.commitment()]];
-    pool.mine(random_block_with(rng, &stamps_cms, 50));
-    let height = pool.height();
-    let spendable_pcd = wallet.spendable_init(application, rng, &spend_note, &pool, height);
-    let anchor = spendable_pcd.data().2;
-    wallet.autonome(
-        application,
-        rng,
-        anchor,
-        vec![(spend_note, spendable_pcd)],
-        vec![output_note],
-    )
+/// An autonome from [`shared_sk`] spending a 1000 note into a 700 note,
+/// proved once per process from seed 0; each caller gets a clone.
+pub fn shared_autonome() -> Bundle<ProofStamp<stamp::Uncompressed>> {
+    static AUTONOME: OnceLock<Bundle<ProofStamp<stamp::Uncompressed>>> = OnceLock::new();
+    AUTONOME
+        .get_or_init(|| {
+            let application = &*application();
+            let rng = &mut StdRng::seed_from_u64(0);
+            let wallet = WalletSim::new(shared_sk());
+            let spend_note = wallet.random_note(1000);
+            let output_note = wallet.random_note(700);
+            let mut pool = PoolSim::genesis_with(random_block(rng, 1, 50));
+            let stamps_cms = vec![vec![spend_note.commitment()]];
+            pool.mine(random_block_with(rng, &stamps_cms, 50));
+            let height = pool.height();
+            let spendable_pcd = wallet.spendable_init(application, rng, &spend_note, &pool, height);
+            let anchor = spendable_pcd.data().2;
+            wallet.autonome(
+                application,
+                rng,
+                anchor,
+                vec![(spend_note, spendable_pcd)],
+                vec![output_note],
+            )
+        })
+        .clone()
 }
 
 pub fn forge_overlapping_merge<RNG: CryptoRng>(
@@ -379,6 +417,7 @@ impl PoolSimBlock {
 pub struct PoolSim {
     history: Vec<PoolSimBlock>,
     anchor_index: BTreeMap<Anchor, (BlockHeight, usize)>,
+    buckets: RefCell<BTreeMap<EpochIndex, QrBucketEntry>>,
 }
 
 impl PoolSim {
@@ -386,6 +425,7 @@ impl PoolSim {
         let mut pool = Self {
             history: Vec::new(),
             anchor_index: BTreeMap::new(),
+            buckets: RefCell::new(BTreeMap::new()),
         };
         pool.push_block(Anchor::default(), stamps);
         pool
@@ -455,6 +495,18 @@ impl PoolSim {
         for _ in 0..count {
             let block = block_factory(self);
             self.mine(block);
+        }
+    }
+
+    /// Mines through `height`, opening each epoch with a two-stamp block and
+    /// leaving every other block empty.
+    pub fn mine_through<RNG: CryptoRng>(&mut self, rng: &mut RNG, height: BlockHeight) {
+        while self.height() < height {
+            if self.height().next().unwrap().is_first_in_epoch() {
+                self.mine(random_block(rng, 1, 2));
+            } else {
+                self.mine(Vec::new());
+            }
         }
     }
 
@@ -541,6 +593,7 @@ pub(crate) struct QrIntakeEntry {
     pub members: Vec<Tachygram>,
 }
 
+#[derive(Clone)]
 pub(crate) struct QrBucketEntry {
     pub pcd: ragu_pcd::Pcd<Pasta, ProductionRank, qr::QrBucket>,
     pub members: Vec<Tachygram>,
@@ -692,11 +745,12 @@ fn merge_qr_run<RNG: CryptoRng>(
     merged
 }
 
-pub(crate) fn split_qr_intake<RNG: CryptoRng>(
+pub(crate) fn split_qr_intake<RNG: CryptoRng, const N: usize>(
     application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
     rng: &mut RNG,
     intake: QrIntakeEntry,
-) -> (QrIntakeEntry, QrIntakeEntry) {
+    kept: [bool; N],
+) -> [QrIntakeEntry; N] {
     let (_epoch, _anchor_prev, _anchor_end, discriminant, profile) = *intake.pcd.data();
     let split_witness = witness::qr_intake_split((*intake.pcd.data(), ()), &intake.members);
     let (sides, ()) = application
@@ -709,7 +763,7 @@ pub(crate) fn split_qr_intake<RNG: CryptoRng>(
         )
         .unwrap();
 
-    let mut descend = |side: bool| {
+    kept.map(|side| {
         let (selection, ()) = application
             .fuse(
                 rng,
@@ -737,10 +791,7 @@ pub(crate) fn split_qr_intake<RNG: CryptoRng>(
             )
             .unwrap();
         QrIntakeEntry { pcd, members }
-    };
-    let non_residue = descend(false);
-    let residue = descend(true);
-    (non_residue, residue)
+    })
 }
 
 pub(crate) fn build_qr_partition<RNG: CryptoRng>(
@@ -757,7 +808,7 @@ pub(crate) fn build_qr_partition<RNG: CryptoRng>(
         let mut residue = Vec::new();
         let mut non_residue = Vec::new();
         for intake in layer {
-            let (nqr_side, qr_side) = split_qr_intake(application, rng, intake);
+            let [nqr_side, qr_side] = split_qr_intake(application, rng, intake, [false, true]);
             non_residue.push(nqr_side);
             residue.push(qr_side);
         }
@@ -767,6 +818,7 @@ pub(crate) fn build_qr_partition<RNG: CryptoRng>(
     layer
 }
 
+#[derive(Clone)]
 pub(crate) struct EvidenceLeaf {
     pub profile: QrProfile,
     pub contents: TachygramSetPoly,
@@ -774,6 +826,7 @@ pub(crate) struct EvidenceLeaf {
     pub path: Vec<([bool; 2], [EvidenceTreeRoot; EVIDENCE_TREE_ARITY])>,
 }
 
+#[derive(Clone)]
 pub(crate) struct EvidenceTreeEntry {
     pub pcd: ragu_pcd::Pcd<Pasta, ProductionRank, evidence::EvidenceTree>,
     pub leaves: Vec<EvidenceLeaf>,
@@ -982,6 +1035,9 @@ pub(crate) fn epoch_bucket<RNG: CryptoRng>(
     pool: &PoolSim,
     epoch: EpochIndex,
 ) -> QrBucketEntry {
+    if let Some(bucket) = pool.buckets.borrow().get(&epoch) {
+        return bucket.clone();
+    }
     let entry = pool.block(epoch.first_block()).prev;
     let final_anchor = pool.block(epoch.last_block()).anchor();
     let anchor_final_prev = u32::from(epoch).checked_sub(1).map_or_else(
@@ -1004,7 +1060,9 @@ pub(crate) fn epoch_bucket<RNG: CryptoRng>(
         assert_eq!(roots.len(), 1);
         roots.pop().unwrap()
     };
-    seal_qr_intake(application, rng, intake, anchor_final_prev)
+    let bucket = seal_qr_intake(application, rng, intake, anchor_final_prev);
+    pool.buckets.borrow_mut().insert(epoch, bucket.clone());
+    bucket
 }
 
 pub(crate) fn small_epoch<RNG: CryptoRng>(rng: &mut RNG) -> (PoolSim, Anchor) {
@@ -1014,6 +1072,45 @@ pub(crate) fn small_epoch<RNG: CryptoRng>(rng: &mut RNG) -> (PoolSim, Anchor) {
     }
     let final_anchor = pool.block(pool.height()).anchor();
     (pool, final_anchor)
+}
+
+/// The [`small_epoch`] depth-2 partition at capacity 24, sealed and built
+/// into an evidence tree, proved once per process from seed 0; each caller
+/// gets a clone of the final anchor, discriminant, buckets and tree.
+pub(crate) fn small_epoch_evidence() -> (
+    Anchor,
+    QrDiscriminant,
+    Vec<QrBucketEntry>,
+    EvidenceTreeEntry,
+) {
+    static EVIDENCE: OnceLock<(
+        Anchor,
+        QrDiscriminant,
+        Vec<QrBucketEntry>,
+        EvidenceTreeEntry,
+    )> = OnceLock::new();
+    EVIDENCE
+        .get_or_init(|| {
+            let application = &*application();
+            let rng = &mut StdRng::seed_from_u64(0);
+            let (pool, final_anchor) = small_epoch(rng);
+            let discriminant = QrDiscriminant::random(rng);
+            let sealed = build_qr_partition(
+                application,
+                rng,
+                &pool,
+                (Anchor::default(), final_anchor),
+                discriminant,
+                24,
+                2,
+            )
+            .into_iter()
+            .map(|intake| seal_qr_intake(application, rng, intake, Anchor::from(Fp::ZERO)))
+            .collect::<Vec<_>>();
+            let tree = build_evidence_tree(application, rng, sealed.clone());
+            (final_anchor, discriminant, sealed, tree)
+        })
+        .clone()
 }
 
 pub(crate) fn qr_bucket_at<RNG: CryptoRng>(
@@ -1040,8 +1137,8 @@ pub(crate) fn qr_bucket_at<RNG: CryptoRng>(
         let side = qr::classify(value, discriminant.at(level)).0;
         let mut kept = Vec::with_capacity(branch.len());
         for intake in branch {
-            let (non_residue, residue) = split_qr_intake(application, rng, intake);
-            kept.push(if side { residue } else { non_residue });
+            let [side_intake] = split_qr_intake(application, rng, intake, [side]);
+            kept.push(side_intake);
         }
         branch = merge_qr_run(application, rng, kept, capacity);
     }

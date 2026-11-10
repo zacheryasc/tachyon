@@ -406,13 +406,10 @@ impl Step<Pasta> for NullifierDerive {
                 "NullifierDerive: sequence does not match the derived window".into(),
             )
         })?;
+        let epoch_end_index = circuit::epoch_value(&epoch_end)?;
         let output = D::just(|| {
             let (start, _) = witness.take();
-            (
-                left.take().0,
-                start,
-                circuit::epoch_value(&epoch_end).take(),
-            )
+            (left.take().0, start, epoch_end_index.take())
         });
         let fields = NoteNullifiersOutput {
             cm: left_encoded.as_gadget().cm.clone(),

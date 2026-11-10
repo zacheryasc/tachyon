@@ -275,9 +275,10 @@ impl Step<Pasta> for QrSpendableInit {
         evaluation.enforce_zero(dr).map_err(|_err| {
             ragu_core::Error::InvalidWitness("QrSpendableInit: commitment not in bucket".into())
         })?;
+        let epoch_current_index = circuit::epoch_value(&next)?;
         let output = D::just(|| {
             let data = left.take();
-            (data.0, circuit::epoch_value(&next).take(), data.4)
+            (data.0, epoch_current_index.take(), data.4)
         });
         let fields = NoteSpendableOutput {
             cm: left_encoded.as_gadget().cm.clone(),

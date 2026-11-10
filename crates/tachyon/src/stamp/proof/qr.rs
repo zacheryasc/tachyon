@@ -1013,17 +1013,22 @@ impl Step<Pasta> for QrSideDescend {
                 )
             })?;
 
-        let output = D::just(|| {
+        let output = D::try_just(|| {
             let (side, ..) = witness.take();
             let (epoch, anchor_prev, anchor_end, discriminant, profile, _) = left.take();
-            (
+            if profile.depth >= u32::BITS {
+                return Err(ragu_core::Error::InvalidWitness(
+                    "QrSideDescend: profile has no bit left for another side".into(),
+                ));
+            }
+            Ok((
                 epoch,
                 anchor_prev,
                 anchor_end,
                 discriminant,
                 profile.descend(side),
-            )
-        });
+            ))
+        })?;
         let fields = QrIntakeOutput {
             epoch: left_encoded.as_gadget().epoch.clone(),
             anchor_prev: left_encoded.as_gadget().anchor_prev.clone(),
@@ -1526,12 +1531,13 @@ impl Step<Pasta> for QrUnspentInit {
             ragu_core::Error::InvalidWitness("QrUnspentInit: found nullifier in the bucket".into())
         })?;
 
+        let epoch_next_index = circuit::epoch_value(&epoch_next)?;
         let output = D::just(|| {
             let (bucket_epoch, bucket_anchor_start, bucket_anchor_next, ..) = left.take();
             (
                 bucket_anchor_start,
                 bucket_epoch,
-                circuit::epoch_value(&epoch_next).take(),
+                epoch_next_index.take(),
                 bucket_anchor_next,
             )
         });

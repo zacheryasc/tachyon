@@ -7,7 +7,7 @@ use rand::{SeedableRng as _, rngs::StdRng};
 use zcash_tachyon::{
     ActionSetPoly, Anchor, TachygramSetPoly, VerificationError, VerifyCoverageError, bundle,
     stamp::{
-        self, ProofStamp, ProveError,
+        self, ProofStamp,
         proof::stamp::{Stamp, StampUnmerge},
     },
     value, witness,
@@ -295,7 +295,7 @@ fn unmerge_by_a_lifted_divisor() {
     );
     let stamped_at = pool.height();
 
-    pool.advance(2, |_| random_block(rng, 1, 4));
+    pool.advance(2, |_| random_block(rng, 1, 1));
     let mut alice = wallet.autonome(
         application,
         rng,
@@ -340,8 +340,10 @@ fn unmerge_by_a_lifted_divisor() {
         )
         .unwrap();
 
-    assert_matches!(
-        alice_bob.clone().unmerge(application,
+    let unaligned = alice_bob
+        .clone()
+        .unmerge(
+            application,
             rng,
             (
                 alice.descriptors().chain(bob.descriptors()).collect(),
@@ -352,9 +354,20 @@ fn unmerge_by_a_lifted_divisor() {
                 bob.descriptors().collect(),
                 [bob.fee_descriptor()].into(),
             ),
-        ),
-        Err(ProveError::ProofFailed(ragu_core::Error::InvalidWitness(err)))
-            if err.to_string() == "StampUnmerge: anchors must match"
+        )
+        .unwrap();
+    assert!(
+        !unaligned
+            .verify_proof(
+                application,
+                rng,
+                alice
+                    .descriptors()
+                    .map(|desc| desc.digest().unwrap())
+                    .chain(iter::once(alice.fee_descriptor().digest().unwrap()))
+            )
+            .unwrap(),
+        "StampUnmerge: anchors must match"
     );
 
     alice.stamp = alice_bob
@@ -596,17 +609,18 @@ fn unmerge_binds_its_sets() {
             "StampUnmerge: dividend tachygram set must be the product of divisor and quotient tachygram sets",
         ),
     ] {
-        assert_matches!(
-            application
-                .fuse(
-                    rng,
-                    StampUnmerge,
-                    corrupt,
-                    alice_bob.proof.clone().carry::<Stamp>(dividend_header),
-                    bob.stamp.proof.clone().carry::<Stamp>(divisor_header),
-                )
-                .err(),
-            Some(ragu_core::Error::InvalidWitness(err)) if err.to_string() == expected
+        let (forged, ()) = application
+            .fuse(
+                rng,
+                StampUnmerge,
+                corrupt,
+                alice_bob.proof.clone().carry::<Stamp>(dividend_header),
+                bob.stamp.proof.clone().carry::<Stamp>(divisor_header),
+            )
+            .unwrap();
+        assert!(
+            !application.verify_uncompressed(&forged, &mut *rng).unwrap(),
+            "{expected}"
         );
     }
 }

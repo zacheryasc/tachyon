@@ -679,13 +679,14 @@ impl Step<Pasta> for UnspentLift {
             ragu_core::Error::InvalidWitness("UnspentLift: found nullifier in the bucket".into())
         })?;
 
+        let epoch_next_index = circuit::epoch_value(&epoch_next)?;
         let output = D::just(|| {
             let (unspent_anchor_start, unspent_epoch_start, ..) = left.take();
             let (_, _, bucket_anchor_next, ..) = right.take();
             (
                 unspent_anchor_start,
                 unspent_epoch_start,
-                circuit::epoch_value(&epoch_next).take(),
+                epoch_next_index.take(),
                 bucket_anchor_next,
             )
         });

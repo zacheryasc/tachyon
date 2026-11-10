@@ -110,13 +110,24 @@ pub(crate) fn epoch_next<'dr, D: Driver<'dr, F = Fp>>(
     Ok(next)
 }
 
-/// Requires an epoch that has already passed the range check.
+/// The native index of an epoch element.
+///
+/// # Errors
+///
+/// Returns [`ragu_core::Error::InvalidWitness`] for a value above
+/// [`EPOCH_MAX`], which the circuit's range check also rejects.
 pub(crate) fn epoch_value<'dr, D: Driver<'dr, F = Fp>>(
     epoch: &Element<'dr, D>,
-) -> DriverValue<D, EpochIndex> {
-    epoch.value().map(|candidate| {
-        let [first, second, third, fourth, ..] = candidate.to_bytes();
-        EpochIndex::new(u32::from_le_bytes([first, second, third, fourth]))
+) -> Result<DriverValue<D, EpochIndex>> {
+    D::try_just(|| {
+        let [first, second, third, fourth, high @ ..] = epoch.value().take().to_bytes();
+        let index = u32::from_le_bytes([first, second, third, fourth]);
+        if index > EPOCH_MAX || high.iter().any(|&byte| byte != 0) {
+            return Err(ragu_core::Error::InvalidWitness(
+                "epoch is above EPOCH_MAX".into(),
+            ));
+        }
+        Ok(EpochIndex::new(index))
     })
 }
 
