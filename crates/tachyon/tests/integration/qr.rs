@@ -217,18 +217,18 @@ fn qr_intake_split_rejects_an_empty_intake() {
     let discriminant = QrDiscriminant::random(rng);
     let intake = seed_qr_empty_intake(application, rng, start, EpochIndex::new(3), discriminant);
 
-    let (split, ()) = application
-        .fuse(
-            rng,
-            qr::QrIntakeSplit,
-            witness::qr_intake_split((*intake.pcd.data(), ()), &[]),
-            intake.pcd,
-            application.bootstrap_proof().clone().carry::<()>(()),
-        )
-        .unwrap();
-    assert!(
-        !application.verify_uncompressed(&split, &mut *rng).unwrap(),
-        "QrIntakeSplit: an empty intake cannot be split"
+    assert_matches!(
+        application
+            .fuse(
+                rng,
+                qr::QrIntakeSplit,
+                witness::qr_intake_split((*intake.pcd.data(), ()), &[]),
+                intake.pcd,
+                application.bootstrap_proof().clone().carry::<()>(()),
+            )
+            .err(),
+        Some(ragu_core::Error::InvalidWitness(err))
+            if err.to_string() == "QrIntakeSplit: an empty intake cannot be split"
     );
 }
 
@@ -276,20 +276,18 @@ fn qr_side_descend_rejects_a_split_into_the_same_set() {
             .unwrap()
     );
 
-    let (descended, ()) = application
-        .fuse(
-            rng,
-            qr::QrSideDescend,
-            witness::qr_side_descend((*sides.data(), *selection.data()), side),
-            sides,
-            selection,
-        )
-        .unwrap();
-    assert!(
-        !application
-            .verify_uncompressed(&descended, &mut *rng)
-            .unwrap(),
-        "QrSideDescend: the two sides are the same set"
+    assert_matches!(
+        application
+            .fuse(
+                rng,
+                qr::QrSideDescend,
+                witness::qr_side_descend((*sides.data(), *selection.data()), side),
+                sides,
+                selection,
+            )
+            .err(),
+        Some(ragu_core::Error::InvalidWitness(err))
+            if err.to_string() == "QrSideDescend: the two sides are the same set"
     );
 }
 
