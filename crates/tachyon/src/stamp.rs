@@ -42,7 +42,8 @@ use crate::{
     keys::{ProofAuthorizingKey, private},
     pasta::{Eq, Fp},
     primitives::{
-        ActionDigest, ActionDigestError, ActionSetCommit, Anchor, Tachygram, TachygramSetCommit,
+        ActionDigest, ActionDigestError, ActionSetCommit, Anchor, BridgeError, Tachygram,
+        TachygramSetCommit,
     },
     serialization,
     stamp::proof::{delegation, pool, spend, spendable},
@@ -289,9 +290,12 @@ impl Proof for Uncompressed {
         rng: &mut RNG,
         header: (ActionSetCommit, TachygramSetCommit, Anchor),
     ) -> Result<bool, ragu_core::Error> {
-        let pcd = self
-            .clone()
-            .carry::<Stamp>(Stamp::header(header.1, header.2)?);
+        let stamp_header = match Stamp::header(header.1, header.2) {
+            Ok(stamp_header) => stamp_header,
+            // No proof carries the identity as its tachygram commitment.
+            Err(BridgeError::IdentityCommitment) => return Ok(false),
+        };
+        let pcd = self.clone().carry::<Stamp>(stamp_header);
         let [action_slot, tachygram_slot] = pcd.commitments();
         if action_slot != Eq::from(header.0).to_affine()
             || tachygram_slot != Eq::from(header.1).to_affine()
@@ -332,11 +336,12 @@ impl Proof for Compressed {
         {
             return Ok(false);
         }
-        application.verify_compressed(
-            &self
-                .clone()
-                .carry::<Stamp>(Stamp::header(header.1, header.2)?),
-        )
+        let stamp_header = match Stamp::header(header.1, header.2) {
+            Ok(stamp_header) => stamp_header,
+            // No proof carries the identity as its tachygram commitment.
+            Err(BridgeError::IdentityCommitment) => return Ok(false),
+        };
+        application.verify_compressed(&self.clone().carry::<Stamp>(stamp_header))
     }
 }
 
@@ -803,6 +808,9 @@ pub enum ProveError {
     /// Proof creation failed; carries the underlying step-level error.
     #[display("proof failed: {_0}")]
     ProofFailed(ragu_core::Error),
+    /// A stamp's tachygram-set commitment has no bridge hash.
+    #[display("tachygram set bridge failed: {_0}")]
+    Bridge(BridgeError),
 }
 
 /// An uncompressed Ragu proof.
@@ -994,7 +1002,9 @@ impl ProofStamp<Uncompressed> {
     ///
     /// # Errors
     ///
-    /// Returns [`ragu_core::Error`] if a proof-system step fails.
+    /// - [`ProveError::Bridge`] if a side's tachygram-set commitment is the
+    ///   identity.
+    /// - [`ProveError::ProofFailed`] if a proof-system step fails.
     #[expect(
         clippy::type_complexity,
         reason = "the digests, tachygrams, anchor and proof of each stamp"
@@ -1021,7 +1031,7 @@ impl ProofStamp<Uncompressed> {
             Anchor,
             Box<Uncompressed>,
         ),
-        ragu_core::Error,
+        ProveError,
     > {
         let left_tg_poly = left_tachygrams
             .iter()
@@ -1033,27 +1043,31 @@ impl ProofStamp<Uncompressed> {
             .copied()
             .collect::<TachygramSetPoly>();
 
-        let left_pcd =
-            left_proof.carry::<Stamp>(Stamp::header(left_tg_poly.commit(), left_anchor)?);
-        let right_pcd =
-            right_proof.carry::<Stamp>(Stamp::header(right_tg_poly.commit(), right_anchor)?);
+        let left_pcd = left_proof.carry::<Stamp>(
+            Stamp::header(left_tg_poly.commit(), left_anchor).map_err(ProveError::Bridge)?,
+        );
+        let right_pcd = right_proof.carry::<Stamp>(
+            Stamp::header(right_tg_poly.commit(), right_anchor).map_err(ProveError::Bridge)?,
+        );
 
         let merged_digests: BTreeSet<ActionDigest> =
             left_digests.union(&right_digests).copied().collect();
         let tachygrams: BTreeSet<Tachygram> =
             left_tachygrams.union(&right_tachygrams).copied().collect();
 
-        let (pcd, ()) = application.fuse(
-            rng,
-            StampMerge,
-            witness::stamp_merge(
-                (*left_pcd.data(), *right_pcd.data()),
-                ActionSetPoly::from_iter(merged_digests.clone()),
-                TachygramSetPoly::from_iter(tachygrams.clone()),
-            ),
-            left_pcd,
-            right_pcd,
-        )?;
+        let (pcd, ()) = application
+            .fuse(
+                rng,
+                StampMerge,
+                witness::stamp_merge(
+                    (*left_pcd.data(), *right_pcd.data()),
+                    ActionSetPoly::from_iter(merged_digests.clone()),
+                    TachygramSetPoly::from_iter(tachygrams.clone()),
+                ),
+                left_pcd,
+                right_pcd,
+            )
+            .map_err(ProveError::ProofFailed)?;
 
         Ok((
             merged_digests,
@@ -1070,6 +1084,8 @@ impl ProofStamp<Uncompressed> {
     /// # Errors
     ///
     /// - [`ProveError::MissingPcd`] if no span is provided.
+    /// - [`ProveError::Bridge`] if the stamp's tachygram-set commitment is the
+    ///   identity.
     /// - [`ProveError::ProofFailed`] if a proof-system step fails, including
     ///   when `action_digests` are not the stamp's action set.
     fn prove_lift<RNG: CryptoRng>(
@@ -1087,7 +1103,7 @@ impl ProofStamp<Uncompressed> {
 
         let action_set = action_digests.into_iter().collect::<ActionSetPoly>();
         let mut stamp_pcd = self.proof.carry::<Stamp>(
-            Stamp::header(self.tachygram_set, self.anchor).map_err(ProveError::ProofFailed)?,
+            Stamp::header(self.tachygram_set, self.anchor).map_err(ProveError::Bridge)?,
         );
         for span in spans {
             stamp_pcd = application
@@ -1124,8 +1140,9 @@ impl ProofStamp<Uncompressed> {
     /// # Errors
     ///
     /// Returns [`ProveError`] if an action digest cannot be computed, no span
-    /// is provided, or a proof-system step fails. `StampLift` fails when the
-    /// descriptors are not the stamp's covered actions.
+    /// is provided, the stamp's tachygram-set commitment is the identity, or a
+    /// proof-system step fails. `StampLift` fails when the descriptors are not
+    /// the stamp's covered actions.
     pub fn lift<RNG: CryptoRng>(
         self,
         application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
@@ -1155,8 +1172,8 @@ impl ProofStamp<Uncompressed> {
     ///
     /// # Errors
     ///
-    /// Returns [`ProveError`] if an action digest cannot be computed or a
-    /// proof-system step fails.
+    /// Returns [`ProveError`] if an action digest cannot be computed, a
+    /// tachygram-set commitment is the identity, or a proof-system step fails.
     pub fn merge<RNG: CryptoRng>(
         self,
         application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
@@ -1196,8 +1213,7 @@ impl ProofStamp<Uncompressed> {
                 right_stamp.anchor,
                 right_stamp.proof,
             ),
-        )
-        .map_err(ProveError::ProofFailed)?;
+        )?;
 
         let coverage = blake2b::stamp_coverage_digest(
             &blake2b::action_descriptor_digest(
@@ -1223,7 +1239,7 @@ impl ProofStamp<Uncompressed> {
         let proof = application
             .rerandomize(
                 merged_proof.carry::<Stamp>(
-                    Stamp::header(tachygram_set, anchor).map_err(ProveError::ProofFailed)?,
+                    Stamp::header(tachygram_set, anchor).map_err(ProveError::Bridge)?,
                 ),
                 rng,
             )
@@ -1254,8 +1270,8 @@ impl ProofStamp<Uncompressed> {
     ///
     /// # Errors
     ///
-    /// Returns [`ProveError`] if an action digest cannot be computed or a
-    /// proof-system step fails.
+    /// Returns [`ProveError`] if an action digest cannot be computed, a
+    /// tachygram-set commitment is the identity, or a proof-system step fails.
     pub fn unmerge<RNG: CryptoRng>(
         self,
         application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
@@ -1299,11 +1315,11 @@ impl ProofStamp<Uncompressed> {
 
         let dividend_pcd = self.proof.carry::<Stamp>(
             Stamp::header(dividend_tachygram_set.commit(), self.anchor)
-                .map_err(ProveError::ProofFailed)?,
+                .map_err(ProveError::Bridge)?,
         );
         let divisor_pcd = divisor_stamp.proof.carry::<Stamp>(
             Stamp::header(divisor_tachygram_set.commit(), divisor_stamp.anchor)
-                .map_err(ProveError::ProofFailed)?,
+                .map_err(ProveError::Bridge)?,
         );
 
         let (pcd, ()) = application
@@ -1353,14 +1369,16 @@ impl ProofStamp<Uncompressed> {
     ///
     /// # Errors
     ///
-    /// Returns [`ProveError::ProofFailed`] if the proof system fails.
+    /// - [`ProveError::Bridge`] if the stamp's tachygram-set commitment is the
+    ///   identity.
+    /// - [`ProveError::ProofFailed`] if the proof system fails.
     pub fn compress<RNG: CryptoRng>(
         self,
         application: &Application<'_, Pasta, ProductionRank, HEADER_SIZE>,
         rng: &mut RNG,
     ) -> Result<ProofStamp<Compressed>, ProveError> {
         let pcd = self.proof.carry::<Stamp>(
-            Stamp::header(self.tachygram_set, self.anchor).map_err(ProveError::ProofFailed)?,
+            Stamp::header(self.tachygram_set, self.anchor).map_err(ProveError::Bridge)?,
         );
         let (compressed, _) = application
             .compress(&pcd, rng)

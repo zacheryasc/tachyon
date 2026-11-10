@@ -6,7 +6,7 @@ use lazy_static::lazy_static;
 use rand_core::CryptoRng;
 use udon::{curve::Projective as _, field::Field as _};
 
-use super::{EpochIndex, TachygramSetCommit};
+use super::{BridgeError, EpochIndex, TachygramSetCommit};
 use crate::{
     digest::poseidon,
     pasta::{Eq, Fp},
@@ -74,7 +74,7 @@ impl Anchor {
         } else {
             let stamp_hash = stamp_commit
                 .bridge()
-                .map_err(|_err| AnchorError::NextStampZero)?;
+                .map_err(|BridgeError::IdentityCommitment| AnchorError::NextStampZero)?;
             Ok(Self(poseidon::anchor_next_stamp(
                 self.0,
                 epoch.into(),

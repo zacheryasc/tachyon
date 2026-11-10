@@ -1,6 +1,4 @@
-use core::assert_matches;
-
-use ragu_core::{Error, drivers::emulator::Emulator};
+use ragu_core::drivers::emulator::Emulator;
 use ragu_primitives::Element;
 use udon::{
     curve::{Affine as _, Projective as _},
@@ -12,6 +10,7 @@ use super::{
     EMPTY_STAMP_BRIDGE_HASH, TachygramSetCommit, enforce_stamp_domain, new_application,
     pasta::{EpAffine, Eq, Fp},
 };
+use crate::primitives::BridgeError;
 
 #[test]
 fn native_bridge_hash_matches_application() {
@@ -35,8 +34,8 @@ fn native_bridge_hash_matches_application() {
         assert_eq!(EpAffine::from(commitment.bridge().unwrap()), expected);
     }
     assert_eq!(TachygramSetCommit::default().bridge().unwrap(), prepared);
-    assert_matches!(
+    assert_eq!(
         TachygramSetCommit::from(Eq::identity()).bridge(),
-        Err(Error::InvalidWitness(_))
+        Err(BridgeError::IdentityCommitment)
     );
 }

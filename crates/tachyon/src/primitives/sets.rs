@@ -1,7 +1,7 @@
 use core::iter;
 
 use corez::io::{self, Read, Write};
-use derive_more::{AsRef, Debug, Eq as TotalEq, From, Into, PartialEq};
+use derive_more::{AsRef, Debug, Display, Eq as TotalEq, Error, From, Into, PartialEq};
 use ragu_circuits::{
     polynomials::{ProductionRank, sparse::Polynomial},
     staging::wire_degree,
@@ -26,29 +26,45 @@ pub struct TachygramSetCommit(Eq);
 #[derive(Clone, Copy, Debug, From, Into, PartialEq, TotalEq)]
 pub struct TachygramSetBridge(EpAffine);
 
+/// Errors from hashing a tachygram-set commitment.
+#[derive(Debug, Display, Error, PartialEq, TotalEq)]
+pub enum BridgeError {
+    /// The commitment is the identity point, which has no coordinates to hash.
+    #[display("cannot hash the identity commitment")]
+    IdentityCommitment,
+}
+
 impl TachygramSetCommit {
     /// Hashes this commitment with the baked bridge generators.
     ///
     /// # Errors
     ///
-    /// Fails if the commitment is the identity.
-    pub fn bridge(self) -> ragu_core::Result<TachygramSetBridge> {
-        let (x, y) = self.0.to_affine().coordinates().ok_or_else(|| {
-            ragu_core::Error::InvalidWitness("cannot hash the identity commitment".into())
-        })?;
+    /// Returns [`BridgeError::IdentityCommitment`] if the commitment is the
+    /// identity.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the baked setup lacks the bridge generators.
+    pub fn bridge(self) -> Result<TachygramSetBridge, BridgeError> {
+        let (x, y) = self
+            .0
+            .to_affine()
+            .coordinates()
+            .ok_or(BridgeError::IdentityCommitment)?;
         // Two stage wires per gate follow the hoisted endoscalar's bits and products.
         let first_wire = (ENDOSCALAR_BITS + ENDOSCALAR_PRODUCTS).next_multiple_of(2);
         let generators = Pasta::nested_generators(pasta::baked()).g();
+        #[expect(
+            clippy::expect_used,
+            reason = "the baked setup has nested generators for every production-rank wire"
+        )]
         let [left, right] = [first_wire, first_wire + 1].map(|wire| {
             generators
                 .get(wire_degree::<ProductionRank>(wire))
-                .ok_or_else(|| {
-                    ragu_core::Error::Initialization("bridge generator is missing".into())
-                })
+                .expect("the baked setup has the bridge generators")
+                .to_projective()
         });
-        Ok(TachygramSetBridge(
-            (left?.to_projective() * x + right?.to_projective() * y).to_affine(),
-        ))
+        Ok(TachygramSetBridge((left * x + right * y).to_affine()))
     }
 
     /// Read as an affine point from the consensus wire format.

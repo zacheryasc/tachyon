@@ -27,7 +27,9 @@ use crate::{
     keys::{ProofAuthorizingKey, private},
     note::{self, Note},
     pasta::{EpAffine, Fp, Fq},
-    primitives::{ActionDigest, Anchor, TachygramSetBridge, TachygramSetCommit, effect},
+    primitives::{
+        ActionDigest, Anchor, BridgeError, TachygramSetBridge, TachygramSetCommit, effect,
+    },
     relations::{
         arithmetic as circuit, curve,
         enforce::{enforce_poly_equal, enforce_poly_product, enforce_poly_roots},
@@ -145,11 +147,12 @@ impl Stamp {
     ///
     /// # Errors
     ///
-    /// Fails if the commitment is the identity.
+    /// Returns [`BridgeError::IdentityCommitment`] if the commitment is the
+    /// identity.
     pub fn header(
         commitment: TachygramSetCommit,
         anchor: Anchor,
-    ) -> ragu_core::Result<(TachygramSetBridge, Anchor)> {
+    ) -> Result<(TachygramSetBridge, Anchor), BridgeError> {
         Ok((commitment.bridge()?, anchor))
     }
 
