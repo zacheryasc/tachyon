@@ -67,6 +67,7 @@ fn qr_summary_intake_starts_a_root_from_a_summary() {
         (epoch, start, anchor_end, discriminant, QrProfile::ROOT)
     );
     assert_eq!(root.commitments()[0], acc_commit);
+    assert!(application.verify_uncompressed(&root, &mut *rng).unwrap());
 }
 
 #[test]
@@ -171,6 +172,7 @@ fn qr_intake_split_partitions_the_contents_by_class() {
             .to_affine(),
         ]
     );
+    assert!(application.verify_uncompressed(&split, &mut *rng).unwrap());
 }
 
 #[test]
@@ -245,7 +247,7 @@ fn qr_side_select_checks_the_exceptional_value_at_its_depth() {
             )
             .unwrap();
         for side in [false, true] {
-            application
+            let (selection, ()) = application
                 .fuse(
                     rng,
                     qr::QrSideSelect,
@@ -254,6 +256,11 @@ fn qr_side_select_checks_the_exceptional_value_at_its_depth() {
                     application.bootstrap_proof().clone().carry::<()>(()),
                 )
                 .unwrap();
+            assert!(
+                application
+                    .verify_uncompressed(&selection, &mut *rng)
+                    .unwrap()
+            );
         }
 
         let (residue, non_residue): (Vec<Tachygram>, Vec<Tachygram>) =
@@ -724,6 +731,11 @@ fn qr_side_descend_refuses_a_full_register() {
             application.bootstrap_proof().clone().carry::<()>(()),
         )
         .unwrap();
+    assert!(
+        application
+            .verify_uncompressed(&selection, &mut *rng)
+            .unwrap()
+    );
     assert_matches!(
         application
             .fuse(
@@ -785,6 +797,7 @@ fn qr_intake_merge_joins_two_spans() {
         merged.commitments()[0],
         Eq::from(union.commit()).to_affine()
     );
+    assert!(application.verify_uncompressed(&merged, &mut *rng).unwrap());
 }
 
 #[test]
@@ -950,6 +963,11 @@ fn qr_bucket_seal_seals_a_fully_routed_intake() {
         )
     );
     assert_eq!(bucket.pcd.commitments()[0], contents);
+    assert!(
+        application
+            .verify_uncompressed(&bucket.pcd, &mut *rng)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -1073,6 +1091,7 @@ fn qr_empty_intake_seed_spans_a_stampless_epoch() {
         fused.commitments()[0],
         Eq::from(NfSeqPoly::new(epoch0, &[nf0, nf1]).commit()).to_affine()
     );
+    assert!(application.verify_uncompressed(&fused, &mut *rng).unwrap());
 }
 
 /// [`qr::QrEmptyIntakeSeed`] committing its intake to one prover-chosen member.
@@ -1207,6 +1226,7 @@ fn qr_spendable_init_starts_a_spendable_that_reaches_spend_bind() {
             mk.derive_nullifier(EpochIndex::new(u32::from(epoch2) + 1))
         )
     );
+    assert!(application.verify_uncompressed(&bind, &mut *rng).unwrap());
 }
 
 #[test]
@@ -1245,6 +1265,11 @@ fn qr_short_bucket_yields_evidence_no_suffix_can_extend() {
     assert_eq!(
         *spendable.data(),
         (note.commitment(), epoch_next, unpublished)
+    );
+    assert!(
+        application
+            .verify_uncompressed(&spendable, &mut *rng)
+            .unwrap()
     );
     assert!(
         pool.stamps_between(Anchor::default(), tip_anchor)
@@ -1577,7 +1602,7 @@ fn qr_unspent_init_rejects_the_fixed_point_on_the_non_residue_side() {
         honest_roots[usize::try_from(position).unwrap()],
         QrClassRoot(true, Fp::ZERO)
     );
-    application
+    let (accepted, ()) = application
         .fuse(
             rng,
             qr::QrUnspentInit,
@@ -1586,6 +1611,11 @@ fn qr_unspent_init_rejects_the_fixed_point_on_the_non_residue_side() {
             application.bootstrap_proof().clone().carry::<()>(()),
         )
         .unwrap();
+    assert!(
+        application
+            .verify_uncompressed(&accepted, &mut *rng)
+            .unwrap()
+    );
 
     let (_, ref mut roots, ..) = witness;
     let QrClassRoot(ref mut side, _) = roots[usize::try_from(position).unwrap()];
@@ -1671,6 +1701,11 @@ fn qr_unspent_init_accepts_buckets_at_every_depth() {
             segment.commitments()[0],
             Eq::from(NfSeqPoly::new(epoch, &[nf]).commit()).to_affine()
         );
+        assert!(
+            application
+                .verify_uncompressed(&segment, &mut *rng)
+                .unwrap()
+        );
     }
 }
 
@@ -1711,6 +1746,11 @@ fn unspent_lift_carries_a_spendable() {
             epoch3,
             pool.block(epoch3.first_block()).prev
         )
+    );
+    assert!(
+        application
+            .verify_uncompressed(&carried, &mut *rng)
+            .unwrap()
     );
 }
 
