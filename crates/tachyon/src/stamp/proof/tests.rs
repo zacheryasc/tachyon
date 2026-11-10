@@ -1,6 +1,4 @@
-use core::assert_matches;
-
-use ragu_core::{Error, drivers::emulator::Emulator, pasta::Pasta};
+use ragu_core::{drivers::emulator::Emulator, pasta::Pasta};
 use ragu_pcd::profile::{Profile, ProfiledCycle};
 use ragu_primitives::Element;
 use udon::{
@@ -45,11 +43,13 @@ fn native_bridge_hash_matches_application() {
         let expected = application
             .bridge_hash(commitment.as_ref().to_affine())
             .unwrap();
-        assert_eq!(EpAffine::from(commitment.bridge().unwrap()), expected);
+        assert_eq!(EpAffine::from(commitment.bridge()), expected);
     }
-    assert_eq!(TachygramSetCommit::default().bridge().unwrap(), prepared);
-    assert_matches!(
-        TachygramSetCommit::from(Eq::identity()).bridge(),
-        Err(Error::InvalidWitness(_))
-    );
+    assert_eq!(TachygramSetCommit::default().bridge(), prepared);
+}
+
+#[test]
+#[should_panic(expected = "tachygram set commitment is not the identity")]
+fn bridge_panics_on_the_identity_commitment() {
+    let _bridge = TachygramSetCommit::from(Eq::identity()).bridge();
 }

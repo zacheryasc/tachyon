@@ -29,26 +29,35 @@ pub struct TachygramSetBridge(EpAffine);
 impl TachygramSetCommit {
     /// Hashes this commitment with the baked bridge generators.
     ///
-    /// # Errors
+    /// # Panics
     ///
-    /// Fails if the commitment is the identity.
-    pub fn bridge(self) -> ragu_core::Result<TachygramSetBridge> {
-        let (x, y) = self.0.to_affine().coordinates().ok_or_else(|| {
-            ragu_core::Error::InvalidWitness("cannot hash the identity commitment".into())
-        })?;
+    /// Panics if the commitment is the identity, which no set polynomial
+    /// commits to.
+    #[must_use]
+    pub fn bridge(self) -> TachygramSetBridge {
+        #[expect(
+            clippy::expect_used,
+            reason = "no set polynomial commits to the identity"
+        )]
+        let (x, y) = self
+            .0
+            .to_affine()
+            .coordinates()
+            .expect("tachygram set commitment is not the identity");
         // Two stage wires per gate follow the hoisted endoscalar's bits and products.
         let first_wire = (ENDOSCALAR_BITS + ENDOSCALAR_PRODUCTS).next_multiple_of(2);
         let generators = Pasta::nested_generators(pasta::baked()).g();
+        #[expect(
+            clippy::expect_used,
+            reason = "the baked setup has nested generators for every production-rank wire"
+        )]
         let [left, right] = [first_wire, first_wire + 1].map(|wire| {
             generators
                 .get(wire_degree::<ProductionRank>(wire))
-                .ok_or_else(|| {
-                    ragu_core::Error::Initialization("bridge generator is missing".into())
-                })
+                .expect("the baked setup has the bridge generators")
+                .to_projective()
         });
-        Ok(TachygramSetBridge(
-            (left?.to_projective() * x + right?.to_projective() * y).to_affine(),
-        ))
+        TachygramSetBridge((left * x + right * y).to_affine())
     }
 
     /// Read as an affine point from the consensus wire format.

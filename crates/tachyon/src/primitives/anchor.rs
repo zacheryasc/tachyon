@@ -72,13 +72,10 @@ impl Anchor {
         } else if stamp_commit == TachygramSetCommit::default() {
             Err(AnchorError::NextStampEmpty)
         } else {
-            let stamp_hash = stamp_commit
-                .bridge()
-                .map_err(|_err| AnchorError::NextStampZero)?;
             Ok(Self(poseidon::anchor_next_stamp(
                 self.0,
                 epoch.into(),
-                stamp_hash.into(),
+                stamp_commit.bridge().into(),
             )))
         }
     }

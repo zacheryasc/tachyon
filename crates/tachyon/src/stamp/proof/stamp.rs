@@ -143,14 +143,13 @@ impl Header<Fp> for Stamp {
 impl Stamp {
     /// Reconstructs the header from the public tachygram commitment and anchor.
     ///
-    /// # Errors
+    /// # Panics
     ///
-    /// Fails if the commitment is the identity.
-    pub fn header(
-        commitment: TachygramSetCommit,
-        anchor: Anchor,
-    ) -> ragu_core::Result<(TachygramSetBridge, Anchor)> {
-        Ok((commitment.bridge()?, anchor))
+    /// Panics if the commitment is the identity; see
+    /// [`TachygramSetCommit::bridge`].
+    #[must_use]
+    pub fn header(commitment: TachygramSetCommit, anchor: Anchor) -> (TachygramSetBridge, Anchor) {
+        (commitment.bridge(), anchor)
     }
 
     #[expect(

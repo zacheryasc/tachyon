@@ -144,10 +144,7 @@ fn register_step<S: Step<Pasta> + 'static>(
 
 lazy_static! {
     /// Fixed by the baked parameters and production rank, independently of PCD setup.
-    static ref EMPTY_STAMP_BRIDGE_HASH: TachygramSetBridge = {
-        #[expect(clippy::expect_used, reason = "the fixed setup has finite bridge generators")]
-        TachygramSetCommit::default().bridge().expect("valid constant-one bridge hash")
-    };
+    static ref EMPTY_STAMP_BRIDGE_HASH: TachygramSetBridge = TachygramSetCommit::default().bridge();
 }
 
 #[cfg(test)]
