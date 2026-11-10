@@ -172,7 +172,8 @@ fn evidence_tree_joins_reject_mismatched_trees() {
     let epoch0 = EpochIndex::new(0);
     let epoch1 = epoch0.next().unwrap();
     let mut pool = PoolSim::genesis_with(random_block(rng, 1, 1));
-    pool.advance(epoch1.last_block().0, |_| random_block(rng, 1, 1));
+    pool.advance(2, |_| random_block(rng, 1, 1));
+    pool.mine_through(rng, epoch1.last_block());
     let final0 = pool.block(epoch0.last_block()).anchor();
     let final1 = pool.block(epoch1.last_block()).anchor();
     let discriminant = QrDiscriminant::random(rng);
