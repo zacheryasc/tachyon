@@ -217,7 +217,7 @@ impl Step<Pasta> for NoteSeed {
             &mut (),
             witness.as_ref().map(|data| Fp::from(u64::from(data.0))),
         )?;
-        circuit::bounded::<D, 51>(dr, &value, MAX_MONEY)?;
+        circuit::Bits::<D, 51>::bounded(dr, &value, MAX_MONEY)?;
         let psi = Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.1)))?;
         let rcm = Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.2)))?;
         rcm.clone().enforce_nonzero(dr).map_err(|_err| {
@@ -351,7 +351,7 @@ impl Step<Pasta> for NullifierDerive {
         let epoch_start =
             Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.0)))?;
         epoch_start.enforce_equal(dr, &oracles.staged()[0])?;
-        let epoch_bits = circuit::bits::<D, 32>(dr, &epoch_start)?;
+        let epoch_bits = circuit::Bits::<D, 32>::new(dr, &epoch_start)?;
         let low = &epoch_bits[0];
         let high = &epoch_bits[1];
         low.element().enforce_zero(dr).map_err(|_err| {
@@ -375,7 +375,7 @@ impl Step<Pasta> for NullifierDerive {
             })?),
         );
         let epoch_end = epoch_start.add(dr, &width);
-        circuit::bounded::<D, 32>(dr, &epoch_end, u64::from(EPOCH_MAX)).map_err(|_err| {
+        circuit::Bits::<D, 32>::bounded(dr, &epoch_end, u64::from(EPOCH_MAX)).map_err(|_err| {
             ragu_core::Error::InvalidWitness(
                 "NullifierDerive: window exceeds the epoch range".into(),
             )
@@ -406,13 +406,14 @@ impl Step<Pasta> for NullifierDerive {
                 "NullifierDerive: sequence does not match the derived window".into(),
             )
         })?;
+        let end_value = D::try_just(|| {
+            EpochIndex::try_from(*epoch_end.value().take()).map_err(|_err| {
+                ragu_core::Error::InvalidWitness("range-checked epoch conversion failed".into())
+            })
+        })?;
         let output = D::just(|| {
             let (start, _) = witness.take();
-            (
-                left.take().0,
-                start,
-                circuit::epoch_value(&epoch_end).take(),
-            )
+            (left.take().0, start, end_value.take())
         });
         let fields = NoteNullifiersOutput {
             cm: left_encoded.as_gadget().cm.clone(),

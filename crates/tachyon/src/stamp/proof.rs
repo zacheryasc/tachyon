@@ -35,7 +35,7 @@ use ragu_primitives::{ENDOSCALAR_BITS, ENDOSCALAR_PRODUCTS, Element};
 use udon::curve::{Affine, Projective as _};
 
 use crate::{
-    constants::EPOCH_MAX, gadgets::arithmetic::bounded, pasta, primitives::TachygramSetBridge,
+    constants::EPOCH_MAX, gadgets::arithmetic::Bits, pasta, primitives::TachygramSetBridge,
 };
 
 /// Prepares the constant-one commitment's bridge hash without an application.
@@ -91,7 +91,7 @@ fn enforce_stamp_domain<'dr, D: Driver<'dr, F = pasta::Fp>>(
         .element()
         .enforce_zero(dr)
         .map_err(|_err| ragu_core::Error::InvalidWitness("invalid anchor step".into()))?;
-    bounded::<D, 32>(dr, epoch, u64::from(EPOCH_MAX))?;
+    Bits::<D, 32>::bounded(dr, epoch, u64::from(EPOCH_MAX))?;
     Ok(())
 }
 

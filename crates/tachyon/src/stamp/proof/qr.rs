@@ -491,7 +491,7 @@ impl Step<Pasta> for QrEmptyIntakeSeed {
             Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.2)))?;
         let epoch_element =
             Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.1)))?;
-        circuit::bounded::<D, 32>(dr, &epoch_element, u64::from(EPOCH_MAX))?;
+        circuit::Bits::<D, 32>::bounded(dr, &epoch_element, u64::from(EPOCH_MAX))?;
         let output = D::try_just(|| {
             let (anchor, epoch, discriminant) = witness.take();
             let () = left.take();
@@ -978,7 +978,7 @@ impl Step<Pasta> for QrSideDescend {
         }
         let depth_element = left_encoded.as_gadget().depth.clone();
         let profile_bits = left_encoded.as_gadget().bits.clone();
-        circuit::bounded::<D, 5>(dr, &depth_element, 31).map_err(|_err| {
+        circuit::Bits::<D, 5>::bounded(dr, &depth_element, 31).map_err(|_err| {
             ragu_core::Error::InvalidWitness(
                 "QrSideDescend: profile has no bit left for another side".into(),
             )
@@ -1232,9 +1232,14 @@ impl Step<Pasta> for QrBucketSeal {
         let left_encoded = Encoded::<D, Self::Left, HEADER_SIZE>::new(dr, &mut (), left.clone())?;
         let right_encoded = Encoded::<D, Self::Right, HEADER_SIZE>::new(dr, &mut (), right)?;
         let epoch_element = left_encoded.as_gadget().epoch.clone();
-        let next = circuit::epoch_next(dr, &epoch_element).map_err(|_err| {
-            ragu_core::Error::InvalidWitness("QrBucketSeal: crossing past the final epoch".into())
-        })?;
+        let next = circuit::EpochIndex::new(dr, &epoch_element)
+            .and_then(|checked| checked.next(dr))
+            .map_err(|_err| {
+                ragu_core::Error::InvalidWitness(
+                    "QrBucketSeal: crossing past the final epoch".into(),
+                )
+            })?
+            .into_element();
         let previous = Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.0)))?;
         let start = left_encoded.as_gadget().anchor_prev.clone();
         let end = left_encoded.as_gadget().anchor_end.clone();
@@ -1512,9 +1517,12 @@ impl Step<Pasta> for QrUnspentInit {
             witness.as_ref().map(|data| data.2),
         )?;
         let epoch_element = left_encoded.as_gadget().epoch.clone();
-        let epoch_next = circuit::epoch_next(dr, &epoch_element).map_err(|_err| {
-            ragu_core::Error::InvalidWitness("QrUnspentInit: bucket has no next epoch".into())
-        })?;
+        let epoch_next = circuit::EpochIndex::new(dr, &epoch_element)
+            .and_then(|checked| checked.next(dr))
+            .map_err(|_err| {
+                ragu_core::Error::InvalidWitness("QrUnspentInit: bucket has no next epoch".into())
+            })?
+            .into_element();
         #[expect(
             clippy::indexing_slicing,
             reason = "the framework enforces NUM_STAGED = 1"
@@ -1540,12 +1548,17 @@ impl Step<Pasta> for QrUnspentInit {
             ragu_core::Error::InvalidWitness("QrUnspentInit: found nullifier in the bucket".into())
         })?;
 
+        let next_value = D::try_just(|| {
+            EpochIndex::try_from(*epoch_next.value().take()).map_err(|_err| {
+                ragu_core::Error::InvalidWitness("range-checked epoch conversion failed".into())
+            })
+        })?;
         let output = D::just(|| {
             let (bucket_epoch, bucket_anchor_start, bucket_anchor_next, ..) = left.take();
             (
                 bucket_anchor_start,
                 bucket_epoch,
-                circuit::epoch_value(&epoch_next).take(),
+                next_value.take(),
                 bucket_anchor_next,
             )
         });

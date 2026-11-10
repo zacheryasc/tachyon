@@ -132,7 +132,7 @@ fn derive_nullifier<'dr, D: Driver<'dr, F = Fp>>(
     master: &Element<'dr, D>,
     epoch: &Element<'dr, D>,
 ) -> ragu_core::Result<Element<'dr, D>> {
-    let bits = circuit::bits::<D, 32>(dr, epoch)?;
+    let bits = circuit::Bits::<D, 32>::new(dr, epoch)?;
     let low = &bits[0];
     let high = &bits[1];
     let twice_high = high.element().double(dr);
@@ -187,11 +187,11 @@ impl Step<Pasta> for SpendBind {
             ragu_core::Error::InvalidWitness("SpendBind: secret does not match note".into())
         })?;
         let value = right_encoded.as_gadget().value.clone();
-        let value_bits = circuit::bounded::<D, 51>(dr, &value, MAX_MONEY)?;
+        let value_bits = circuit::Bits::<D, 51>::bounded(dr, &value, MAX_MONEY)?;
         let epoch = left_encoded.as_gadget().epoch_current.clone();
         let one = Element::constant(dr, Fp::ONE);
         let next = epoch.add(dr, &one);
-        circuit::bounded::<D, 32>(dr, &next, u64::from(EPOCH_MAX)).map_err(|_err| {
+        circuit::Bits::<D, 32>::bounded(dr, &next, u64::from(EPOCH_MAX)).map_err(|_err| {
             ragu_core::Error::InvalidWitness("SpendBind: no epoch follows the spend epoch".into())
         })?;
         let nf_current = derive_nullifier(dr, &right_encoded.as_gadget().mk, &epoch)?;
@@ -203,16 +203,9 @@ impl Step<Pasta> for SpendBind {
             ragu_core::Error::InvalidWitness("SpendBind: next-epoch nullifier is zero".into())
         })?;
 
-        let rcv_bits = curve::fixed_base::unsigned::free_bits(
-            dr,
-            &witness.as_ref().map(|data| Fq::from(data.0)),
-        )?;
-        let cv = curve::fixed_base::unsigned::commitment(
-            dr,
-            &curve::fixed_base::unsigned::V_TABLE,
-            &value_bits,
-            &rcv_bits,
-        )?;
+        let rcv_bits =
+            circuit::Bits::<D, 255>::free(dr, &witness.as_ref().map(|data| Fq::from(data.0)))?;
+        let cv = curve::fixed_base::unsigned::V_TABLE.commitment(dr, &value_bits, &rcv_bits)?;
         let output = D::just(|| {
             let (spendable_cm, _, anchor) = left.take();
             let (_, note, _) = right.take();

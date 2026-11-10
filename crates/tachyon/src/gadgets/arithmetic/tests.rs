@@ -16,7 +16,7 @@ fn bounded_amount_rejects_raw_out_of_range_assignments() {
     ] {
         let result = Simulator::<Fp>::simulate(amount, |dr, assignment| {
             let element = Element::alloc(dr, &mut (), assignment)?;
-            bounded::<_, 51>(dr, &element, MAX_MONEY)?;
+            Bits::<_, 51>::bounded(dr, &element, MAX_MONEY)?;
             Ok(())
         });
         assert_eq!(result.is_ok(), valid);
@@ -34,7 +34,7 @@ fn epoch_successor_rejects_raw_final_and_out_of_domain_assignments() {
     ] {
         let result = Simulator::<Fp>::simulate(index, |driver, assignment| {
             let epoch = Element::alloc(driver, &mut (), assignment)?;
-            epoch_next(driver, &epoch)?;
+            EpochIndex::new(driver, &epoch)?.next(driver)?;
             Ok(())
         });
         assert_eq!(result.is_ok(), valid);
@@ -46,7 +46,7 @@ fn canonical_field_bits_cost() {
     Simulator::<Fp>::simulate(Fp::from(17), |dr, assignment| {
         let value = Element::alloc(dr, &mut (), assignment)?;
         let before = (dr.num_gates(), dr.num_constraints());
-        bits::<_, 255>(dr, &value)?;
+        Bits::<_, 255>::new(dr, &value)?;
         assert_eq!(
             (dr.num_gates() - before.0, dr.num_constraints() - before.1),
             (325, 676)
@@ -73,7 +73,7 @@ fn compare(bits: [bool; 255], expected_value: Option<Fp>) -> Result<()> {
             let expected = Element::constant(dr, value);
             sum.enforce_equal(dr, &expected)?;
         }
-        canonical(dr, &allocated)
+        Bits(allocated).enforce_canonical(dr)
     })
     .map(|_| ())
 }

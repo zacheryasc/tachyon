@@ -273,12 +273,8 @@ impl Step<Pasta> for OutputAction {
         let pad_root = left_encoded.as_gadget().pad.clone();
         let theta = Element::alloc(dr, &mut (), witness.as_ref().map(|data| data.0.0))?;
         let alpha = poseidon::with_sponge::alpha_output(dr, &theta, &cm_root)?.squeeze(dr)?;
-        let alpha_bits = circuit::bits::<D, 255>(dr, &alpha)?;
-        let scaled = curve::fixed_base::unsigned::walk(
-            dr,
-            &curve::fixed_base::unsigned::G_TABLE,
-            &alpha_bits,
-        )?;
+        let alpha_bits = circuit::Bits::<D, 255>::new(dr, &alpha)?;
+        let scaled = curve::fixed_base::unsigned::G_TABLE.walk(dr, &alpha_bits)?;
         let rk = curve::finish(dr, &scaled)?;
         let cv = left_encoded.as_gadget().cv.clone();
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
@@ -431,13 +427,9 @@ impl Step<Pasta> for SpendAction {
         let cm = left_encoded.as_gadget().cm.clone();
         let theta = Element::alloc(dr, &mut (), witness.as_ref().map(|data| data.0.0))?;
         let alpha = poseidon::with_sponge::alpha_spend(dr, &theta, &cm)?.squeeze(dr)?;
-        let alpha_bits = circuit::bits::<D, 255>(dr, &alpha)?;
+        let alpha_bits = circuit::Bits::<D, 255>::new(dr, &alpha)?;
         let ak_complete = curve::from_point(dr, &ak)?;
-        let scaled = curve::fixed_base::unsigned::walk(
-            dr,
-            &curve::fixed_base::unsigned::G_TABLE,
-            &alpha_bits,
-        )?;
+        let scaled = curve::fixed_base::unsigned::G_TABLE.walk(dr, &alpha_bits)?;
         let rk_complete = curve::add_complete(dr, &ak_complete, &scaled)?;
         let rk = curve::finish(dr, &rk_complete)?;
         let cv = left_encoded.as_gadget().cv.clone();
@@ -827,7 +819,7 @@ pub struct FeeFuse;
 
 lazy_static! {
     // s = MAX_MONEY - maximum, so the corrected walk computes [-maximum]V.
-    static ref FEE_V_TABLE: curve::fixed_base::unsigned::Table<17> = curve::fixed_base::unsigned::table(
+    static ref FEE_V_TABLE: curve::fixed_base::unsigned::Table<17> = curve::fixed_base::unsigned::Table::new(
         *orchard::VALUE_COMMIT_V,
         -*orchard::VALUE_COMMIT_V * Fq::from(MAX_MONEY)
     );
@@ -907,14 +899,14 @@ impl Step<Pasta> for FeeFuse {
         // The three 51-bit slacks f, c and s sum identically to MAX_MONEY.
         // Their integer sum is below p, excluding field wraparound and proving
         // 0 <= fee <= maximum <= MAX_MONEY.
-        circuit::bits::<D, 51>(dr, &fee)?;
+        circuit::Bits::<D, 51>::new(dr, &fee)?;
         let change = maximum.sub(dr, &fee);
-        circuit::bits::<D, 51>(dr, &change).map_err(|_err| {
+        circuit::Bits::<D, 51>::new(dr, &change).map_err(|_err| {
             ragu_core::Error::InvalidWitness("FeeFuse: change is out of range".into())
         })?;
         let bound = Element::constant(dr, Fp::from(MAX_MONEY));
         let slack = bound.sub(dr, &maximum);
-        let slack_bits = circuit::bits::<D, 51>(dr, &slack).map_err(|_err| {
+        let slack_bits = circuit::Bits::<D, 51>::new(dr, &slack).map_err(|_err| {
             ragu_core::Error::InvalidWitness("FeeFuse: maximum fee exceeds MAX_MONEY".into())
         })?;
         let pk = Element::alloc(
@@ -937,13 +929,9 @@ impl Step<Pasta> for FeeFuse {
         for (index, actual) in [&pk, &psi, &rcm, &maximum, &fee].into_iter().enumerate() {
             actual.enforce_equal(dr, &oracles.staged()[index])?;
         }
-        let blind_bits = circuit::bits::<D, 255>(dr, &blind)?;
-        let blind_point = curve::fixed_base::unsigned::walk(
-            dr,
-            &curve::fixed_base::unsigned::R_TABLE,
-            &blind_bits,
-        )?;
-        let value_point = curve::fixed_base::unsigned::walk(dr, &FEE_V_TABLE, &slack_bits)?;
+        let blind_bits = circuit::Bits::<D, 255>::new(dr, &blind)?;
+        let blind_point = curve::fixed_base::unsigned::R_TABLE.walk(dr, &blind_bits)?;
+        let value_point = FEE_V_TABLE.walk(dr, &slack_bits)?;
         let sum = curve::add_complete(dr, &blind_point, &value_point)?;
         let cv = curve::finish(dr, &sum)?;
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
@@ -1076,12 +1064,8 @@ impl Step<Pasta> for FeeSeed {
         for (index, actual) in [&pk, &psi, &rcm].into_iter().enumerate() {
             actual.enforce_equal(dr, &oracles.staged()[index])?;
         }
-        let blind_bits = circuit::bits::<D, 255>(dr, &blind)?;
-        let scaled = curve::fixed_base::unsigned::walk(
-            dr,
-            &curve::fixed_base::unsigned::R_TABLE,
-            &blind_bits,
-        )?;
+        let blind_bits = circuit::Bits::<D, 255>::new(dr, &blind)?;
+        let scaled = curve::fixed_base::unsigned::R_TABLE.walk(dr, &blind_bits)?;
         let cv = curve::finish(dr, &scaled)?;
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
         let zero = Element::constant(dr, Fp::ZERO);
