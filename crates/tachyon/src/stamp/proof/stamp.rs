@@ -27,9 +27,7 @@ use crate::{
     keys::{ProofAuthorizingKey, private},
     note::{self, Note},
     pasta::{EpAffine, Fp, Fq},
-    primitives::{
-        ActionDigest, Anchor, BridgeError, TachygramSetBridge, TachygramSetCommit, effect,
-    },
+    primitives::{ActionDigest, Anchor, TachygramSetBridge, TachygramSetCommit, effect},
     relations::{
         arithmetic as circuit, curve,
         enforce::{enforce_poly_equal, enforce_poly_product, enforce_poly_roots},
@@ -145,15 +143,13 @@ impl Header<Fp> for Stamp {
 impl Stamp {
     /// Reconstructs the header from the public tachygram commitment and anchor.
     ///
-    /// # Errors
+    /// # Panics
     ///
-    /// Returns [`BridgeError::IdentityCommitment`] if the commitment is the
-    /// identity.
-    pub fn header(
-        commitment: TachygramSetCommit,
-        anchor: Anchor,
-    ) -> Result<(TachygramSetBridge, Anchor), BridgeError> {
-        Ok((commitment.bridge()?, anchor))
+    /// Panics if the commitment is the identity; see
+    /// [`TachygramSetCommit::bridge`].
+    #[must_use]
+    pub fn header(commitment: TachygramSetCommit, anchor: Anchor) -> (TachygramSetBridge, Anchor) {
+        (commitment.bridge(), anchor)
     }
 
     #[expect(

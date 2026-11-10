@@ -131,8 +131,7 @@ fn qr_intake_split_partitions_the_contents_by_class() {
         .copied()
         .collect::<TachygramSetPoly>()
         .commit()
-        .bridge()
-        .unwrap();
+        .bridge();
     let stamp_commit = members
         .iter()
         .copied()
@@ -997,9 +996,7 @@ fn qr_bucket_seal_seals_a_fully_routed_intake() {
             final_anchor.next_epoch(epoch.next().unwrap()).unwrap(),
             discriminant,
             profile,
-            TachygramSetCommit::from(Eq::from(contents))
-                .bridge()
-                .unwrap(),
+            TachygramSetCommit::from(Eq::from(contents)).bridge(),
         )
     );
     assert_eq!(bucket.pcd.commitments()[0], contents);

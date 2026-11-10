@@ -1,7 +1,7 @@
 use core::iter;
 
 use corez::io::{self, Read, Write};
-use derive_more::{AsRef, Debug, Display, Eq as TotalEq, Error, From, Into, PartialEq};
+use derive_more::{AsRef, Debug, Eq as TotalEq, From, Into, PartialEq};
 use ragu_circuits::{
     polynomials::{ProductionRank, sparse::Polynomial},
     staging::wire_degree,
@@ -26,31 +26,24 @@ pub struct TachygramSetCommit(Eq);
 #[derive(Clone, Copy, Debug, From, Into, PartialEq, TotalEq)]
 pub struct TachygramSetBridge(EpAffine);
 
-/// Errors from hashing a tachygram-set commitment.
-#[derive(Debug, Display, Error, PartialEq, TotalEq)]
-pub enum BridgeError {
-    /// The commitment is the identity point, which has no coordinates to hash.
-    #[display("cannot hash the identity commitment")]
-    IdentityCommitment,
-}
-
 impl TachygramSetCommit {
     /// Hashes this commitment with the baked bridge generators.
     ///
-    /// # Errors
-    ///
-    /// Returns [`BridgeError::IdentityCommitment`] if the commitment is the
-    /// identity.
-    ///
     /// # Panics
     ///
-    /// Panics if the baked setup lacks the bridge generators.
-    pub fn bridge(self) -> Result<TachygramSetBridge, BridgeError> {
+    /// Panics if the commitment is the identity, which no set polynomial
+    /// commits to.
+    #[must_use]
+    pub fn bridge(self) -> TachygramSetBridge {
+        #[expect(
+            clippy::expect_used,
+            reason = "no set polynomial commits to the identity"
+        )]
         let (x, y) = self
             .0
             .to_affine()
             .coordinates()
-            .ok_or(BridgeError::IdentityCommitment)?;
+            .expect("tachygram set commitment is not the identity");
         // Two stage wires per gate follow the hoisted endoscalar's bits and products.
         let first_wire = (ENDOSCALAR_BITS + ENDOSCALAR_PRODUCTS).next_multiple_of(2);
         let generators = Pasta::nested_generators(pasta::baked()).g();
@@ -64,7 +57,7 @@ impl TachygramSetCommit {
                 .expect("the baked setup has the bridge generators")
                 .to_projective()
         });
-        Ok(TachygramSetBridge((left * x + right * y).to_affine()))
+        TachygramSetBridge((left * x + right * y).to_affine())
     }
 
     /// Read as an affine point from the consensus wire format.

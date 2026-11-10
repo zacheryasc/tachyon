@@ -10,7 +10,6 @@ use super::{
     EMPTY_STAMP_BRIDGE_HASH, TachygramSetCommit, enforce_stamp_domain, new_application,
     pasta::{EpAffine, Eq, Fp},
 };
-use crate::primitives::BridgeError;
 
 #[test]
 fn native_bridge_hash_matches_application() {
@@ -31,11 +30,13 @@ fn native_bridge_hash_matches_application() {
         let expected = application
             .bridge_hash(commitment.as_ref().to_affine())
             .unwrap();
-        assert_eq!(EpAffine::from(commitment.bridge().unwrap()), expected);
+        assert_eq!(EpAffine::from(commitment.bridge()), expected);
     }
-    assert_eq!(TachygramSetCommit::default().bridge().unwrap(), prepared);
-    assert_eq!(
-        TachygramSetCommit::from(Eq::identity()).bridge(),
-        Err(BridgeError::IdentityCommitment)
-    );
+    assert_eq!(TachygramSetCommit::default().bridge(), prepared);
+}
+
+#[test]
+#[should_panic(expected = "tachygram set commitment is not the identity")]
+fn bridge_panics_on_the_identity_commitment() {
+    let _bridge = TachygramSetCommit::from(Eq::identity()).bridge();
 }

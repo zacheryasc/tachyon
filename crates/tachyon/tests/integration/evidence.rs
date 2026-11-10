@@ -58,7 +58,7 @@ fn evidence_tree_admission_rejects_substituted_contents() {
     }
     let replacement: TachygramSetPoly = iter::once(Tachygram::random(rng)).collect();
     let mut forged_header = *bucket.pcd.data();
-    forged_header.5 = replacement.commit().bridge().unwrap();
+    forged_header.5 = replacement.commit().bridge();
     let forged = bucket
         .pcd
         .proof()
