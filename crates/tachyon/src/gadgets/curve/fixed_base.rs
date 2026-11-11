@@ -1,9 +1,10 @@
 //! Fixed-base multiplication: shared affine adders for the [`unsigned`]
 //! walks.
 //!
-//! The incomplete adder is sound only where the caller proves distinct x
-//! coordinates for every Boolean assignment. The finite-input adder is
-//! complete for finite operands.
+//! The incomplete adder pins its slope only when the operands have distinct
+//! x coordinates; at equal x any slope satisfies it. It is sound only where
+//! integer bounds prove distinct x for every Boolean assignment. The checked
+//! adder constrains distinct x instead.
 
 use core::array;
 
@@ -15,12 +16,7 @@ use ragu_core::{
 use ragu_primitives::{Boolean, Element};
 use udon::field::Field as _;
 
-use super::{super::super::pasta::Fp, CompletePoint};
-
-struct Finite<'dr, D: Driver<'dr>> {
-    x: Element<'dr, D>,
-    y: Element<'dr, D>,
-}
+use super::{super::super::pasta::Fp, Finite};
 
 /// Pins slope and its square in two gates. Caller proves denominator nonzero.
 fn slope<'dr, D: Driver<'dr, F = Fp>>(
@@ -65,30 +61,16 @@ fn add_incomplete<'dr, D: Driver<'dr, F = Fp>>(
     Ok(Finite { x, y })
 }
 
-/// Eleven-gate finite-input addition. Equal x selects the doubling slope;
-/// 2y is nonzero on this odd-prime-order curve. Inverses set the identity
-/// flag, whose placeholder coordinates are ignored by complete joins.
-fn add_finite<'dr, D: Driver<'dr, F = Fp>>(
+/// Four-gate addition that constrains distinct x coordinates. Equal x means
+/// equal or inverse operands, so every satisfying assignment adds distinct
+/// finite points.
+fn add_checked<'dr, D: Driver<'dr, F = Fp>>(
     dr: &mut D,
     accumulator: &Finite<'dr, D>,
     operand: &Finite<'dr, D>,
-) -> Result<CompletePoint<'dr, D>> {
-    let same_x = accumulator.x.is_equal(dr, &mut (), &operand.x)?;
-    let same_y = accumulator.y.is_equal(dr, &mut (), &operand.y)?;
-    let square = accumulator.x.square(dr)?;
-    let double_numerator = square.scale(dr, Coeff::Arbitrary(Fp::from(3)));
-    let add_numerator = operand.y.sub(dr, &accumulator.y);
-    let numerator = same_x.conditional_select(dr, &add_numerator, &double_numerator)?;
-    let double_denominator = accumulator.y.double(dr);
-    let add_denominator = operand.x.sub(dr, &accumulator.x);
-    let denominator = same_x.conditional_select(dr, &add_denominator, &double_denominator)?;
-    let (slope, slope_square) = slope(dr, &numerator, &denominator)?;
-    let x = slope_square.sub(dr, &accumulator.x).sub(dr, &operand.x);
-    let difference = accumulator.x.sub(dr, &x);
-    let y = slope.mul(dr, &difference)?.sub(dr, &accumulator.y);
-    let not_same_y = same_y.not(dr);
-    let infinity = same_x.and(dr, &not_same_y)?;
-    Ok(CompletePoint { x, y, infinity })
+) -> Result<Finite<'dr, D>> {
+    operand.x.sub(dr, &accumulator.x).enforce_nonzero(dr)?;
+    add_incomplete(dr, accumulator, operand)
 }
 
 /// Multilinear coefficients of a function on $\{0, 1\}^3$, indexed by the bit
