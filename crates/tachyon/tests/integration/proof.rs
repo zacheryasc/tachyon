@@ -951,7 +951,7 @@ fn nullifier_derive_rejects_invalid_windows() {
             )
             .err(),
         Some(ragu_core::Error::InvalidWitness(err))
-            if err.to_string() == "epoch is above EPOCH_MAX"
+            if err.to_string() == "epoch index out of range"
     );
 }
 
