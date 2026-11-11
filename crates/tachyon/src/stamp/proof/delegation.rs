@@ -22,21 +22,25 @@ use ragu_pcd::{
     header::{Header, Suffix},
     step::{Encoded, HeaderInput, Index, Oracles, Slot, Step},
 };
-use ragu_primitives::{Element, GadgetExt as _, Point, allocator::Allocator, io::Write};
+use ragu_primitives::{
+    Boolean, Element, GadgetExt as _, Point,
+    allocator::Allocator,
+    io::Write,
+    multipack,
+    vec::{ConstLen, FixedVec},
+};
 use udon::{curve::Affine as _, field::Field as _};
 
 use crate::{
-    constants::{EPOCH_MAX, MAX_MONEY},
+    constants::MAX_MONEY,
     digest::poseidon,
+    gadgets::{self, arithmetic as circuit},
     keys::{NoteMasterKey, PaymentKey, ProofAuthorizingKey},
     note::{self, Note},
     nullifier::{self, NF_DERIVATION_WIDTH},
     pasta::{EpAffine, Fp},
     primitives::{EpochIndex, NfSeqPoly},
-    relations::{
-        arithmetic as circuit, curve,
-        enforce::{enforce_poly_product, indexed_member_factor},
-    },
+    relations::enforce::{enforce_poly_product, indexed_member_factor},
     value,
 };
 
@@ -219,7 +223,22 @@ impl Step<Pasta> for NoteSeed {
             &mut (),
             witness.as_ref().map(|data| Fp::from(u64::from(data.0))),
         )?;
-        circuit::bounded::<D, 51>(dr, &value, MAX_MONEY)?;
+        // Both the value and MAX_MONEY - value fit 51 bits, so neither wraps.
+        let maximum = Element::constant(dr, Fp::from(MAX_MONEY));
+        let slack = maximum.sub(dr, &value);
+        #[expect(clippy::indexing_slicing, reason = "fixed 51-bit decompositions")]
+        for amount in [&value, &slack] {
+            let bits = FixedVec::<_, ConstLen<51>>::try_from_fn(|index| {
+                Boolean::alloc(
+                    dr,
+                    &mut (),
+                    amount
+                        .value()
+                        .map(|candidate| candidate.to_le_bits().as_ref()[index]),
+                )
+            })?;
+            multipack(dr, &bits)?[0].enforce_equal(dr, amount)?;
+        }
         let psi = Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.1)))?;
         let rcm = Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.2)))?;
         rcm.clone().enforce_nonzero(dr).map_err(|_err| {
@@ -236,10 +255,11 @@ impl Step<Pasta> for NoteSeed {
                 .ok_or_else(|| ragu_core::Error::InvalidWitness("invalid ak encoding".into()))
         })?;
         let ak = Point::alloc(dr, ak_assignment)?;
-        let [ak_x, ak_y] = curve::coordinates(dr, &ak)?;
-        let pk = poseidon::with_driver::payment_key(dr, (&ak_x, &ak_y), &nk)?;
-        let mk = poseidon::with_driver::nf_master(dr, &psi, &nk)?;
-        let cm = poseidon::with_driver::note_commitment(dr, &rcm, &pk, &value, &psi)?;
+        let [ak_x, ak_y] = gadgets::coordinates(dr, &ak)?;
+        let pk = poseidon::with_sponge::payment_key(dr, (&ak_x, &ak_y), &nk)?.squeeze(dr)?;
+        let mk = poseidon::with_sponge::nf_master(dr, &psi, &nk)?.squeeze(dr)?;
+        let cm =
+            poseidon::with_sponge::note_commitment(dr, &rcm, &pk, &value, &psi)?.squeeze(dr)?;
         let output = D::just(|| {
             let (note_value, note_psi, note_rcm, _) = witness.take();
             let note = Note {
@@ -352,7 +372,16 @@ impl Step<Pasta> for NullifierDerive {
         let epoch_start =
             Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.0)))?;
         epoch_start.enforce_equal(dr, &oracles.staged()[0])?;
-        let epoch_bits = circuit::bits::<D, 32>(dr, &epoch_start)?;
+        let epoch_bits = FixedVec::<_, ConstLen<32>>::try_from_fn(|index| {
+            Boolean::alloc(
+                dr,
+                &mut (),
+                epoch_start
+                    .value()
+                    .map(|candidate| candidate.to_le_bits().as_ref()[index]),
+            )
+        })?;
+        multipack(dr, &epoch_bits)?[0].enforce_equal(dr, &epoch_start)?;
         let low = &epoch_bits[0];
         let high = &epoch_bits[1];
         low.element().enforce_zero(dr).map_err(|_err| {
@@ -376,11 +405,13 @@ impl Step<Pasta> for NullifierDerive {
             })?),
         );
         let epoch_end = epoch_start.add(dr, &width);
-        circuit::bounded::<D, 32>(dr, &epoch_end, u64::from(EPOCH_MAX)).map_err(|_err| {
-            ragu_core::Error::InvalidWitness(
-                "NullifierDerive: window exceeds the epoch range".into(),
-            )
-        })?;
+        let end_value = circuit::EpochIndex::new(dr, &epoch_end)
+            .map_err(|_err| {
+                ragu_core::Error::InvalidWitness(
+                    "NullifierDerive: window exceeds the epoch range".into(),
+                )
+            })?
+            .value()?;
         let mk = left_encoded.as_gadget().mk.clone();
         let z = oracles.zeta().clone();
         let seq_at_z = oracles.query(dr, Slot::output(0), &z)?;
@@ -393,8 +424,9 @@ impl Step<Pasta> for NullifierDerive {
         for _ in 0..(NF_DERIVATION_WIDTH / PoseidonFp::RATE) {
             let group_offset = offset.sub(dr, &one);
             let group_start = epoch_start.add(dr, &group_offset);
-            let group = poseidon::with_driver::nullifier_group(dr, &mk, &group_start)?;
-            for nullifier in group {
+            let mut sponge = poseidon::with_sponge::nullifier_group(dr, &mk, &group_start)?;
+            for _ in 0..PoseidonFp::RATE {
+                let nullifier = sponge.squeeze(dr)?;
                 let index = epoch_start.add(dr, &offset);
                 let factor = indexed_member_factor(dr, &nullifier, &index, &z)?;
                 window_at_z = window_at_z.mul(dr, &factor)?;
@@ -406,10 +438,9 @@ impl Step<Pasta> for NullifierDerive {
                 "NullifierDerive: sequence does not match the derived window".into(),
             )
         })?;
-        let epoch_end_index = circuit::epoch_value(&epoch_end)?;
         let output = D::just(|| {
             let (start, _) = witness.take();
-            (left.take().0, start, epoch_end_index.take())
+            (left.take().0, start, end_value.take())
         });
         let fields = NoteNullifiersOutput {
             cm: left_encoded.as_gadget().cm.clone(),

@@ -1,6 +1,7 @@
 use core::ops;
 
-use derive_more::{Debug, Eq as TotalEq, Into, PartialEq};
+use derive_more::{Debug, Display, Eq as TotalEq, Error, Into, PartialEq};
+use udon::field::Field as _;
 
 use super::BlockHeight;
 use crate::{
@@ -23,6 +24,11 @@ use crate::{
 /// protocol's range.
 #[derive(Clone, Copy, Debug, Into, Ord, PartialEq, PartialOrd, TotalEq)]
 pub struct EpochIndex(u32);
+
+/// A field element outside the epoch-index range.
+#[derive(Clone, Copy, Debug, Display, Error)]
+#[display("field element is not a valid epoch index")]
+pub struct EpochIndexError;
 
 /// A non-negative distance between two [`EpochIndex`]es, from subtraction.
 #[derive(Clone, Copy, Debug, Into, Ord, PartialEq, PartialOrd, TotalEq)]
@@ -79,6 +85,20 @@ impl From<EpochIndex> for u64 {
 impl From<EpochIndex> for Fp {
     fn from(epoch: EpochIndex) -> Self {
         Self::from(u64::from(epoch.0))
+    }
+}
+
+impl TryFrom<Fp> for EpochIndex {
+    type Error = EpochIndexError;
+
+    fn try_from(value: Fp) -> Result<Self, Self::Error> {
+        let [first, second, third, fourth, ..] = value.to_bytes();
+        let index = u32::from_le_bytes([first, second, third, fourth]);
+        if index <= EPOCH_MAX && value == Fp::from(u64::from(index)) {
+            Ok(Self(index))
+        } else {
+            Err(EpochIndexError)
+        }
     }
 }
 

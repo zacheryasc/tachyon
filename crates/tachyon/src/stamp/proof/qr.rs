@@ -34,7 +34,13 @@ use ragu_pcd::{
     header::{Header, Suffix},
     step::{Encoded, HeaderInput, Index, Oracles, Slot, Step},
 };
-use ragu_primitives::{Boolean, Element, GadgetExt as _, allocator::Allocator, io::Write};
+use ragu_primitives::{
+    Boolean, Element, GadgetExt as _,
+    allocator::Allocator,
+    io::Write,
+    multipack,
+    vec::{ConstLen, FixedVec},
+};
 use udon::{curve::Affine as _, field::Field as _};
 
 use super::{
@@ -44,17 +50,14 @@ use super::{
 pub use crate::collections::qr::classify;
 use crate::{
     collections::qr::QUADRATIC_NON_RESIDUE,
-    constants::EPOCH_MAX,
     digest::poseidon,
+    gadgets::arithmetic as circuit,
     pasta::{EpAffine, Fp},
     primitives::{
         Anchor, EpochIndex, NfSeqPoly, QrClassRoot, QrDiscriminant, QrInterpolantPoly, QrProfile,
         QrQuotientPoly, Tachygram, TachygramSetBridge, TachygramSetPoly,
     },
-    relations::{
-        arithmetic as circuit,
-        enforce::{enforce_poly_equal, enforce_poly_product, indexed_member_factor},
-    },
+    relations::enforce::{enforce_poly_equal, enforce_poly_product, indexed_member_factor},
 };
 
 /// Tachygrams under routing, complete for `profile` over the covered span.
@@ -392,12 +395,13 @@ impl Step<Pasta> for QrStampIntakeSeed {
             Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.1)))?;
         enforce_poly_equal(dr, oracles, Slot::output(0), Slot::output(1))?;
         super::enforce_stamp_domain(dr, &epoch_element, oracles.bridge_hash())?;
-        let anchor = poseidon::with_driver::anchor_next_stamp(
+        let anchor = poseidon::with_sponge::anchor_next_stamp(
             dr,
             &previous,
             &epoch_element,
             oracles.bridge_hash(),
-        )?;
+        )?
+        .squeeze(dr)?;
         let output = D::try_just(|| {
             let (anchor_prev, epoch, discriminant, _) = witness.take();
             let () = left.take();
@@ -444,9 +448,6 @@ impl Step<Pasta> for QrStampIntakeSeed {
 /// entry anchor of `epoch + 1` only if `anchor` is both the entry anchor and
 /// the final anchor of `epoch`. That holds only when the epoch published no
 /// stamp. `discriminant` is a free witness. See [`QrDiscriminant`].
-///
-/// The contents are committed before the random challenge and checked against
-/// the constant polynomial $1$, which represents an empty intake.
 /// O0 opens once at the challenge and is constrained to one.
 #[derive(Debug)]
 pub struct QrEmptyIntakeSeed;
@@ -483,21 +484,19 @@ impl Step<Pasta> for QrEmptyIntakeSeed {
         let left_encoded = Encoded::<D, Self::Left, HEADER_SIZE>::new(dr, &mut (), left.clone())?;
         let right_encoded =
             Encoded::<D, Self::Right, HEADER_SIZE>::new(dr, &mut (), right.clone())?;
+        let zeta = oracles.zeta().clone();
+        let contents = oracles.query(dr, Slot::output(0), &zeta)?;
         let one = Element::constant(dr, Fp::ONE);
-        let z = oracles.zeta().clone();
-        oracles
-            .query(dr, Slot::output(0), &z)?
-            .enforce_equal(dr, &one)
-            .map_err(|_err| {
-                ragu_core::Error::InvalidWitness("QrEmptyIntakeSeed: contents must be one".into())
-            })?;
+        contents.enforce_equal(dr, &one).map_err(|_err| {
+            ragu_core::Error::InvalidWitness("QrEmptyIntakeSeed: contents must be one".into())
+        })?;
         let anchor_element =
             Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.0)))?;
         let discriminant_element =
             Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.2)))?;
         let epoch_element =
             Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.1)))?;
-        circuit::bounded::<D, 32>(dr, &epoch_element, u64::from(EPOCH_MAX))?;
+        circuit::EpochIndex::new(dr, &epoch_element)?;
         let output = D::try_just(|| {
             let (anchor, epoch, discriminant) = witness.take();
             let () = left.take();
@@ -903,7 +902,7 @@ impl Step<Pasta> for QrSideDescend {
     ) -> ragu_core::Result<[Vec<Fp>; 2]> {
         #[expect(
             clippy::indexing_slicing,
-            reason = "a boolean selects one of the two side slots"
+            reason = "a boolean selects index zero or one in a two-slot header"
         )]
         let selected = &left.polynomials[usize::from(!witness.0)];
         Ok([selected.clone(), alloc::vec![Fp::ONE]])
@@ -984,11 +983,28 @@ impl Step<Pasta> for QrSideDescend {
         }
         let depth_element = left_encoded.as_gadget().depth.clone();
         let profile_bits = left_encoded.as_gadget().bits.clone();
-        circuit::bounded::<D, 5>(dr, &depth_element, 31).map_err(|_err| {
-            ragu_core::Error::InvalidWitness(
-                "QrSideDescend: profile has no bit left for another side".into(),
-            )
-        })?;
+        // Both the depth and 31 - depth fit 5 bits, so neither wraps.
+        let maximum = Element::constant(dr, Fp::from(31));
+        let remaining = maximum.sub(dr, &depth_element);
+        #[expect(clippy::indexing_slicing, reason = "fixed 5-bit decompositions")]
+        for value in [&depth_element, &remaining] {
+            let bits = FixedVec::<_, ConstLen<5>>::try_from_fn(|index| {
+                Boolean::alloc(
+                    dr,
+                    &mut (),
+                    value
+                        .value()
+                        .map(|candidate| candidate.to_le_bits().as_ref()[index]),
+                )
+            })?;
+            multipack(dr, &bits)?[0]
+                .enforce_equal(dr, value)
+                .map_err(|_err| {
+                    ragu_core::Error::InvalidWitness(
+                        "QrSideDescend: profile has no bit left for another side".into(),
+                    )
+                })?;
+        }
         let bit = Boolean::alloc(dr, &mut (), witness.as_ref().map(|data| data.0))?;
         let base_discriminant = left_encoded.as_gadget().discriminant.clone();
         let discriminant_element = base_discriminant.add(dr, &depth_element);
@@ -1243,20 +1259,26 @@ impl Step<Pasta> for QrBucketSeal {
         let left_encoded = Encoded::<D, Self::Left, HEADER_SIZE>::new(dr, &mut (), left.clone())?;
         let right_encoded = Encoded::<D, Self::Right, HEADER_SIZE>::new(dr, &mut (), right)?;
         let epoch_element = left_encoded.as_gadget().epoch.clone();
-        let next = circuit::epoch_next(dr, &epoch_element).map_err(|_err| {
-            ragu_core::Error::InvalidWitness("QrBucketSeal: crossing past the final epoch".into())
-        })?;
+        let next = circuit::EpochIndex::new(dr, &epoch_element)
+            .and_then(|checked| checked.next(dr))
+            .map_err(|_err| {
+                ragu_core::Error::InvalidWitness(
+                    "QrBucketSeal: crossing past the final epoch".into(),
+                )
+            })?
+            .into_element();
         let previous = Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.0)))?;
         let start = left_encoded.as_gadget().anchor_prev.clone();
         let end = left_encoded.as_gadget().anchor_end.clone();
-        let boundary = poseidon::with_driver::anchor_next_epoch(dr, &previous, &epoch_element)?;
+        let boundary =
+            poseidon::with_sponge::anchor_next_epoch(dr, &previous, &epoch_element)?.squeeze(dr)?;
         start.enforce_equal(dr, &boundary).map_err(|_err| {
             ragu_core::Error::InvalidWitness(
                 "QrBucketSeal: witnessed boundary digest does not match intake's first anchor"
                     .into(),
             )
         })?;
-        let crossing = poseidon::with_driver::anchor_next_epoch(dr, &end, &next)?;
+        let crossing = poseidon::with_sponge::anchor_next_epoch(dr, &end, &next)?.squeeze(dr)?;
         let output = D::try_just(|| {
             let (epoch, anchor_prev, _, discriminant, profile) = left.take();
             let [hash_x, hash_y] = oracles
@@ -1296,12 +1318,13 @@ impl Step<Pasta> for QrBucketSeal {
             bits: left_encoded.as_gadget().bits.clone(),
             contents_hash: oracles.bridge_hash().clone(),
         };
-        let z = oracles.zeta().clone();
-        let contents_at_z = oracles.query(dr, Slot::left(0), &z)?;
-        let output_at_z = oracles.query(dr, Slot::output(0), &z)?;
-        let bridge_at_z = oracles.query(dr, Slot::output(1), &z)?;
-        contents_at_z.enforce_equal(dr, &output_at_z)?;
-        contents_at_z.enforce_equal(dr, &bridge_at_z)?;
+        let zeta = oracles.zeta().clone();
+        let contents = oracles.query(dr, Slot::left(0), &zeta)?;
+        for slot in [Slot::output(0), Slot::output(1)] {
+            oracles
+                .query(dr, slot, &zeta)?
+                .enforce_equal(dr, &contents)?;
+        }
         Ok((
             (left_encoded, right_encoded, Encoded::from_gadget(fields)),
             data,
@@ -1521,9 +1544,13 @@ impl Step<Pasta> for QrUnspentInit {
             witness.as_ref().map(|data| data.2),
         )?;
         let epoch_element = left_encoded.as_gadget().epoch.clone();
-        let epoch_next = circuit::epoch_next(dr, &epoch_element).map_err(|_err| {
-            ragu_core::Error::InvalidWitness("QrUnspentInit: bucket has no next epoch".into())
-        })?;
+        let checked_next = circuit::EpochIndex::new(dr, &epoch_element)
+            .and_then(|checked| checked.next(dr))
+            .map_err(|_err| {
+                ragu_core::Error::InvalidWitness("QrUnspentInit: bucket has no next epoch".into())
+            })?;
+        let next_value = checked_next.value()?;
+        let epoch_next = checked_next.into_element();
         #[expect(
             clippy::indexing_slicing,
             reason = "the framework enforces NUM_STAGED = 1"
@@ -1549,13 +1576,12 @@ impl Step<Pasta> for QrUnspentInit {
             ragu_core::Error::InvalidWitness("QrUnspentInit: found nullifier in the bucket".into())
         })?;
 
-        let epoch_next_index = circuit::epoch_value(&epoch_next)?;
         let output = D::just(|| {
             let (bucket_epoch, bucket_anchor_start, bucket_anchor_next, ..) = left.take();
             (
                 bucket_anchor_start,
                 bucket_epoch,
-                epoch_next_index.take(),
+                next_value.take(),
                 bucket_anchor_next,
             )
         });
