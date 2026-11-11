@@ -7,12 +7,18 @@
 //! lookups, so halo2's Lagrange interpolation becomes a two-gate selection
 //! precomputed per window (see [`Window`]).
 //!
-//! Every interior prefix satisfies $0 < A_j \le 9(8^j - 1)/7 < 2 \cdot 8^j
-//! \le D_j$ and $A_j + D_j \le 9(8^{j+1} - 1)/7 < q$ for $j \le 83$, so no
-//! interior addition meets equal or inverse operands and no prefix is the
-//! identity. The top addition is complete; with all digits zero, a zero
-//! correction reaches its inverse case and a correction of twice the offset
-//! reaches doubling.
+//! Interior additions are incomplete. Each window's digit is selected exactly
+//! from Boolean bits, so for every assignment, free bits included, the
+//! interior prefix satisfies $0 < A_j \le 9(8^j - 1)/7 < 2 \cdot 8^j \le D_j$
+//! and $A_j + D_j \le 9(8^{j+1} - 1)/7 < q$ for $j \le 83$. No interior
+//! addition meets equal or inverse operands and no prefix is the identity.
+//!
+//! No such bound covers the top addition or a join with a variable point, so
+//! each of those constrains $x$ coordinates distinct. A walk is therefore
+//! unsatisfiable when its result would be the identity (e.g. $k \equiv 0$ on
+//! a zero correction) or when the prefix equals the top entry, a doubling.
+//! A value walk joins onto the blind point $P$ before its top entry, so $v =
+//! 0$ yields $P$ rather than an identity intermediate.
 //!
 //! What a walk proves depends on how its bits are bound:
 //!
@@ -42,7 +48,7 @@ use super::{
         constants::orchard::{self, ACTION_AUTH_GENERATOR},
         pasta::{Ep, EpAffine, Fp, Fq},
     },
-    CompletePoint, Window, add_finite, add_incomplete, select,
+    Finite, Window, add_checked, add_incomplete, select,
 };
 
 lazy_static! {
@@ -89,15 +95,16 @@ impl<const W: usize> Table<W> {
         Self { low, top }
     }
 
+    /// Returns the interior prefix $A_{W-1}$ and the selected top entry.
     #[expect(
         clippy::indexing_slicing,
         reason = "const assertions fix the bit count; new() constructs exactly W - 1 low windows"
     )]
-    pub(crate) fn walk<'dr, D: Driver<'dr, F = Fp>, const N: usize>(
+    fn prefix_and_top<'dr, D: Driver<'dr, F = Fp>, const N: usize>(
         &self,
         dr: &mut D,
         bits: &FixedVec<Boolean<'dr, D>, ConstLen<N>>,
-    ) -> Result<CompletePoint<'dr, D>> {
+    ) -> Result<(Finite<'dr, D>, Finite<'dr, D>)> {
         const {
             assert!(W > 1 && W <= 85, "the offset bound covers W=2..85");
             assert!(N == 3 * W, "the bit width must match the fixed-base table");
@@ -109,21 +116,46 @@ impl<const W: usize> Table<W> {
             accumulator = add_incomplete(dr, &accumulator, &digit)?;
         }
         let top = select(dr, &self.top, window(W - 1))?;
-        add_finite(dr, &accumulator, &top)
+        Ok((accumulator, top))
+    }
+
+    /// $\[k\]B + C$. Unsatisfiable when the prefix and top entry share an x
+    /// coordinate, which includes every $k$ with $\[k\]B + C$ the identity.
+    pub(crate) fn walk<'dr, D: Driver<'dr, F = Fp>, const N: usize>(
+        &self,
+        dr: &mut D,
+        bits: &FixedVec<Boolean<'dr, D>, ConstLen<N>>,
+    ) -> Result<Finite<'dr, D>> {
+        let (prefix, top) = self.prefix_and_top(dr, bits)?;
+        add_checked(dr, &prefix, &top)
+    }
+
+    /// $\[k\]B + C + P$, joining `start` between the prefix and the top entry
+    /// so that $\[k\]B + C$ may be the identity. Both joins constrain distinct
+    /// x coordinates.
+    pub(crate) fn walk_onto<'dr, D: Driver<'dr, F = Fp>, const N: usize>(
+        &self,
+        dr: &mut D,
+        bits: &FixedVec<Boolean<'dr, D>, ConstLen<N>>,
+        start: &Finite<'dr, D>,
+    ) -> Result<Finite<'dr, D>> {
+        let (prefix, top) = self.prefix_and_top(dr, bits)?;
+        let joined = add_checked(dr, &prefix, start)?;
+        add_checked(dr, &joined, &top)
     }
 }
 
 impl Table<17> {
+    /// $\[v\]B + \[\mathsf{rcv}\]\mathcal{R}$, with the value walk joined onto
+    /// the blind point.
     pub(crate) fn commitment<'dr, D: Driver<'dr, F = Fp>>(
         &self,
         dr: &mut D,
         amount: &FixedVec<Boolean<'dr, D>, ConstLen<51>>,
         blind: &FixedVec<Boolean<'dr, D>, ConstLen<255>>,
     ) -> Result<Point<'dr, D, EpAffine>> {
-        let product = self.walk(dr, amount)?;
         let blind_point = R_TABLE.walk(dr, blind)?;
-        let sum = super::super::add_complete(dr, &product, &blind_point)?;
-        super::super::finish(dr, &sum)
+        self.walk_onto(dr, amount, &blind_point)?.to_point(dr)
     }
 }
 

@@ -274,11 +274,10 @@ impl Step<Pasta> for OutputAction {
         let theta = Element::alloc(dr, &mut (), witness.as_ref().map(|data| data.0.0))?;
         let alpha = poseidon::with_sponge::alpha_output(dr, &theta, &cm_root)?.squeeze(dr)?;
         let alpha_bits = circuit::Bits::<D, 255>::new(dr, &alpha)?;
-        let scaled = curve::fixed_base::unsigned::G_TABLE.walk(dr, &alpha_bits)?;
-        let rk = curve::finish(dr, &scaled)?;
+        let curve::Finite { x: rk_x, y: rk_y } =
+            curve::fixed_base::unsigned::G_TABLE.walk(dr, &alpha_bits)?;
         let cv = left_encoded.as_gadget().cv.clone();
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
-        let [rk_x, rk_y] = curve::coordinates(dr, &rk)?;
         let action_root = poseidon::with_sponge::action_digest(dr, (&cv_x, &cv_y), (&rk_x, &rk_y))?
             .squeeze(dr)?;
         #[expect(clippy::indexing_slicing, reason = "framework enforces NUM_STAGED = 1")]
@@ -428,13 +427,11 @@ impl Step<Pasta> for SpendAction {
         let theta = Element::alloc(dr, &mut (), witness.as_ref().map(|data| data.0.0))?;
         let alpha = poseidon::with_sponge::alpha_spend(dr, &theta, &cm)?.squeeze(dr)?;
         let alpha_bits = circuit::Bits::<D, 255>::new(dr, &alpha)?;
-        let ak_complete = curve::from_point(dr, &ak)?;
-        let scaled = curve::fixed_base::unsigned::G_TABLE.walk(dr, &alpha_bits)?;
-        let rk_complete = curve::add_complete(dr, &ak_complete, &scaled)?;
-        let rk = curve::finish(dr, &rk_complete)?;
+        let ak_finite = curve::Finite { x: ak_x, y: ak_y };
+        let curve::Finite { x: rk_x, y: rk_y } =
+            curve::fixed_base::unsigned::G_TABLE.walk_onto(dr, &alpha_bits, &ak_finite)?;
         let cv = left_encoded.as_gadget().cv.clone();
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
-        let [rk_x, rk_y] = curve::coordinates(dr, &rk)?;
         let action_root = poseidon::with_sponge::action_digest(dr, (&cv_x, &cv_y), (&rk_x, &rk_y))?
             .squeeze(dr)?;
         #[expect(clippy::indexing_slicing, reason = "framework enforces NUM_STAGED = 1")]
@@ -931,10 +928,8 @@ impl Step<Pasta> for FeeFuse {
         }
         let blind_bits = circuit::Bits::<D, 255>::new(dr, &blind)?;
         let blind_point = curve::fixed_base::unsigned::R_TABLE.walk(dr, &blind_bits)?;
-        let value_point = FEE_V_TABLE.walk(dr, &slack_bits)?;
-        let sum = curve::add_complete(dr, &blind_point, &value_point)?;
-        let cv = curve::finish(dr, &sum)?;
-        let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
+        let curve::Finite { x: cv_x, y: cv_y } =
+            FEE_V_TABLE.walk_onto(dr, &slack_bits, &blind_point)?;
         let fee_digest =
             poseidon::with_sponge::fee_digest(dr, (&cv_x, &cv_y), &fee)?.squeeze(dr)?;
         let fee_change =
@@ -1065,9 +1060,8 @@ impl Step<Pasta> for FeeSeed {
             actual.enforce_equal(dr, &oracles.staged()[index])?;
         }
         let blind_bits = circuit::Bits::<D, 255>::new(dr, &blind)?;
-        let scaled = curve::fixed_base::unsigned::R_TABLE.walk(dr, &blind_bits)?;
-        let cv = curve::finish(dr, &scaled)?;
-        let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
+        let curve::Finite { x: cv_x, y: cv_y } =
+            curve::fixed_base::unsigned::R_TABLE.walk(dr, &blind_bits)?;
         let zero = Element::constant(dr, Fp::ZERO);
         let fee_digest =
             poseidon::with_sponge::fee_digest(dr, (&cv_x, &cv_y), &zero)?.squeeze(dr)?;
