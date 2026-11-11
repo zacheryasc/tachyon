@@ -38,7 +38,7 @@ An observer learns which two tachygrams belong to each action and which tachygra
 
 An intermediate `Actions` proof, built from actions and merges before the bundle's fee is applied, contains the two tachygrams of every action it covers.
 
-A published stamp has every covered bundle's fee applied. Its tachygram set is the union of the covered actions' pairs and each covered bundle's [fee change note](./fee.md#fee-change-note) commitment. These members are read from the covered bundles[^bundle]; the stamp carries their set commitment, with no separate list or count. Ideally, the consensus chain contains aggregated[^aggregation] bundles.
+A published stamp has every covered bundle's fee applied. Its tachygram set is the union of the covered actions' pairs and each covered bundle's [fee change note](./fee.md#fee-change-note) commitment. These members are read from the covered bundles[^bundle]; the stamp carries only their set commitment. Ideally, the consensus chain contains aggregated[^aggregation] bundles.
 
 The stamp proof binds a commitment to the unordered set of those tachygrams.
 

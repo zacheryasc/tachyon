@@ -153,7 +153,7 @@ A stripped adjunct keeps its action pairs and fee descriptor: `cvFeeMaxTachyon` 
 
 The indicator is authorization data, not effecting data: it rides on the strippable stamp trailer, contributes to `auth_digest`, and is absent from adjuncts. It is not a soundness mechanism. The proof binds the action set regardless; a wrong indicator only harms its author, since mempool actors decline to handle a transaction whose indicator they cannot satisfy, and a subset, superset, or partial overlap simply fails to validate.
 
-Coverage verification recomputes the indicator over the candidate collection's action descriptors and fee coverage entries and fails on disagreement before attempting stamp proof verification. Tachygram validation derives the union of all covered action pairs and fee changes, rejects repeated members and an oversized union, and checks `cTachygrams`. There is no separate tachygram list or arity check.
+Coverage verification recomputes the indicator over the candidate collection's action descriptors and fee coverage entries and fails on disagreement before attempting stamp proof verification. Tachygram validation derives the union of all covered action pairs and fee changes, rejects repeated members and an oversized union, and checks `cTachygrams`.
 
 <!-- TODO
 p2p aggregation gossip is a secondary objective and aggregation has some complex constraints.
