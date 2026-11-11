@@ -436,9 +436,6 @@ fn verify_proof_action_multiset_invariants() {
 }
 
 #[test]
-fn read_rejects_malformed_tachygram_lists() {}
-
-#[test]
 fn read_rejects_wrong_proof_size() {
     let application = &*application();
     let rng = &mut StdRng::seed_from_u64(0);
@@ -503,6 +500,7 @@ fn output_stamp_round_trips_and_binds_its_tachygram_set() {
     stamp.write(&mut buf).unwrap();
     let decoded = ProofStamp::<stamp::Uncompressed>::read(&*buf).unwrap();
     assert_eq!(decoded.fee, stamp.fee);
+    assert_eq!(decoded.fee_change, stamp.fee_change);
     assert_eq!(decoded.coverage, stamp.coverage);
     assert_eq!(decoded.anchor, stamp.anchor);
     assert_eq!(decoded.tachygram_set, stamp.tachygram_set);

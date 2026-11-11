@@ -6,9 +6,10 @@ use alloc::{
     vec,
     vec::Vec,
 };
-use core::{assert_matches, cmp::Reverse};
+use core::{assert_matches, cmp::Reverse, iter, mem};
 
 use corez::io;
+use ragu_circuits::polynomials::{ProductionRank, Rank as _};
 use rand::{SeedableRng as _, rngs::StdRng};
 use zcash_tachyon::{
     BlockHeight, SignatureError, Tachygram, action,
@@ -419,6 +420,40 @@ fn based_aggregate_with_two_adjuncts() {
         .verify(application, rng, &sighash, &wtxid_bytes, &adjuncts)
         .unwrap();
 
+    {
+        let mut edited = becomes_based.clone();
+        let mut adjunct = adjunct_a.clone();
+        let [based_lo, based_hi] = edited.actions[0].tachygrams.into();
+        let [adjunct_lo, adjunct_hi] = adjunct.actions[0].tachygrams.into();
+        edited.actions[0].tachygrams = TachygramPair::from([based_lo, adjunct_hi]);
+        adjunct.actions[0].tachygrams = TachygramPair::from([adjunct_lo, based_hi]);
+        assert_matches!(
+            edited.verify(
+                application,
+                rng,
+                &sighash,
+                &wtxid_bytes,
+                &[&adjunct, &adjunct_b]
+            ),
+            Err(VerificationError::Disproved)
+        );
+    }
+    {
+        let mut edited = becomes_based.clone();
+        let mut adjunct = adjunct_a.clone();
+        mem::swap(&mut edited.stamp.fee_change, &mut adjunct.stamp.fee_change);
+        assert_matches!(
+            edited.verify(
+                application,
+                rng,
+                &sighash,
+                &wtxid_bytes,
+                &[&adjunct, &adjunct_b]
+            ),
+            Err(VerificationError::Disproved)
+        );
+    }
+
     assert_matches!(
         becomes_based.verify(application, rng, &sighash, &[0x5au8; 64], &adjuncts),
         Err(VerificationError::Pointers(
@@ -479,6 +514,49 @@ fn autonome_verify_rejects_flipped_signatures() {
 }
 
 #[test]
+fn autonome_verify_rejects_exchanged_tachygrams() {
+    let mut bundle = shared_autonome();
+    let application = &*application();
+    let rng = &mut StdRng::seed_from_u64(0);
+    let [first_lo, first_hi] = bundle.actions[0].tachygrams.into();
+    let [second_lo, second_hi] = bundle.actions[1].tachygrams.into();
+    bundle.actions[0].tachygrams = TachygramPair::from([first_lo, second_hi]);
+    bundle.actions[1].tachygrams = TachygramPair::from([second_lo, first_hi]);
+    assert_matches!(
+        bundle.verify(
+            application,
+            rng,
+            &mock_sighash(bundle.commitment()),
+            &mock_wtxid(&bundle).into(),
+            &[],
+        ),
+        Err(VerificationError::Disproved)
+    );
+}
+
+#[test]
+fn verify_rejects_a_note_output_twice_under_different_thetas() {
+    let application = &*application();
+    let rng = &mut StdRng::seed_from_u64(0);
+    let wallet = WalletSim::new(shared_sk());
+    let note = wallet.random_note(200);
+    let anchor = Anchor::random(rng);
+    let bundle = wallet.autonome(application, rng, anchor, vec![], vec![note, note]);
+    assert_matches!(
+        bundle.verify(
+            application,
+            rng,
+            &mock_sighash(bundle.commitment()),
+            &mock_wtxid(&bundle).into(),
+            &[],
+        ),
+        Err(VerificationError::Tachygrams(
+            VerifyTachygramsError::DuplicateTachygrams
+        ))
+    );
+}
+
+#[test]
 fn stamped_bundle_round_trips() {
     let stamped = shared_autonome();
     let application = &*application();
@@ -493,6 +571,7 @@ fn stamped_bundle_round_trips() {
     assert_eq!(decoded.actions, stamped.actions);
     assert_eq!(decoded.value_balance, stamped.value_balance);
     assert_eq!(decoded.stamp.anchor, stamped.stamp.anchor);
+    assert_eq!(decoded.stamp.fee_change, stamped.stamp.fee_change);
     decoded
         .verify(
             application,
@@ -517,6 +596,8 @@ fn stamped_bundle_round_trips() {
     erased.write(&mut erased_buf).unwrap();
     assert_eq!(erased_buf, bytes);
     let mut block = Bundle::<ProofStamp<stamp::Compressed>>::read(&*bytes).unwrap();
+    assert_eq!(block.actions, decoded.actions);
+    assert_eq!(block.stamp.fee_change, decoded.stamp.fee_change);
     assert_eq!(TachyonBundle::read(&*bytes).unwrap(), erased);
     Bundle::<PointerStamp>::try_from(erased).unwrap_err();
     let sighash = mock_sighash(block.commitment());
@@ -611,6 +692,8 @@ fn stripped_bundle_round_trips() {
         assert_eq!(decoded.commitment(), stripped.commitment());
         assert_eq!(decoded.auth_digest(), stripped.auth_digest());
         assert_eq!(decoded.stamp.wtxid, wtxid);
+        assert_eq!(decoded.actions, stripped.actions);
+        assert_eq!(decoded.stamp.fee_change, stripped.stamp.fee_change);
         decoded
             .verify_signatures(&mock_sighash(decoded.commitment()))
             .unwrap();
@@ -670,6 +753,7 @@ fn bundle_state_mismatches_are_rejected() {
 
 #[test]
 fn auth_digest_invariants() {
+    let rng = &mut StdRng::seed_from_u64(0);
     let stamped = shared_autonome();
     let (commitment, auth_digest) = (stamped.commitment(), stamped.auth_digest());
     let pointer = stamped.clone().strip(mock_wtxid(&stamped));
@@ -684,19 +768,67 @@ fn auth_digest_invariants() {
     let mut refeed = pointer.clone();
     refeed.stamp.fee = value::Positive::try_from(u64::from(pointer.stamp.fee) + 1).unwrap();
     assert_ne!(refeed.auth_digest(), pointer.auth_digest());
+    let mut pointer_pair = pointer.clone();
+    pointer_pair.actions[0].tachygrams = [Tachygram::random(rng), Tachygram::random(rng)].into();
+    let mut pointer_change = pointer.clone();
+    pointer_change.stamp.fee_change = Tachygram::random(rng);
+    for edited in [pointer_pair, pointer_change] {
+        assert_eq!(edited.commitment(), commitment);
+        assert_ne!(edited.auth_digest(), pointer.auth_digest());
+    }
 
     let mut coverage = stamped.clone();
     coverage.stamp.coverage[0] ^= 0x01;
     let mut fee = stamped.clone();
     fee.stamp.fee = value::Positive::try_from(u64::from(stamped.stamp.fee) + 1).unwrap();
-    for edited in [coverage, fee] {
+    let mut pair = stamped.clone();
+    pair.actions[0].tachygrams = [Tachygram::random(rng), Tachygram::random(rng)].into();
+    let mut fee_change = stamped;
+    fee_change.stamp.fee_change = Tachygram::random(rng);
+    for edited in [coverage, fee, pair, fee_change] {
         assert_eq!(edited.commitment(), commitment);
         assert_ne!(edited.auth_digest(), auth_digest);
     }
 }
 
 #[test]
-fn read_rejects_noncanonical_tachygrams() {}
+fn read_rejects_noncanonical_tachygrams() {
+    let stamped = shared_autonome();
+    let mut bytes = Vec::new();
+    stamped.write(&mut bytes).unwrap();
+    let mut count = Vec::new();
+    CompactSize::try_from(stamped.actions.len())
+        .unwrap()
+        .write(&mut count)
+        .unwrap();
+    let first = 1 + 8 + count.len() + 64;
+    for equal in [false, true] {
+        let mut edited = bytes.clone();
+        if equal {
+            edited.copy_within(first..first + 32, first + 32);
+        } else {
+            let (left, right) = edited[first..first + 64].split_at_mut(32);
+            left.swap_with_slice(right);
+        }
+        let err = Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*edited).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(err.to_string(), "tachygram pair is not strictly ascending");
+    }
+}
+
+#[test]
+fn verify_tachygrams_rejects_an_oversized_union() {
+    let bundle = shared_autonome();
+    let rng = &mut StdRng::seed_from_u64(0);
+    let pairs = iter::repeat_with(|| {
+        TachygramPair::from([Tachygram::random(rng), Tachygram::random(rng)])
+    })
+    .take(ProductionRank::num_coeffs().div_ceil(2));
+    assert_matches!(
+        bundle.verify_tachygrams(pairs, []),
+        Err(VerifyTachygramsError::TooManyTachygrams)
+    );
+}
 
 fn spend_plan_at(
     rng: &mut StdRng,

@@ -552,6 +552,80 @@ fn unmerge_splitting_a_bundle() {
 }
 
 #[test]
+fn unmerge_rejects_a_reproven_note_as_divisor() {
+    let application = &*application();
+    let rng = &mut StdRng::seed_from_u64(0);
+    let wallet = WalletSim::new(shared_sk());
+    let anchor = Anchor::random(rng);
+    let note = wallet.random_note(300);
+    let max_fee_note = wallet.random_note(100);
+    let fee = value::Positive::try_from(40u64).unwrap();
+    let [original, reproven] = [(), ()].map(|()| {
+        let (plan, signed, pcds) =
+            wallet.signed(application, rng, vec![], vec![note], max_fee_note);
+        let (stamp, pairs) = plan
+            .stamp_plan(anchor, fee)
+            .prove(application, rng, &wallet.pak, pcds)
+            .unwrap();
+        signed.stamp(stamp, &pairs).unwrap()
+    });
+    let other = wallet.autonome(
+        application,
+        rng,
+        anchor,
+        vec![],
+        vec![wallet.random_note(200)],
+    );
+    let dividend = original
+        .stamp
+        .clone()
+        .merge(
+            application,
+            rng,
+            (
+                original.action_tachygrams().collect(),
+                [original.fee_descriptor()].into(),
+            ),
+            (
+                other.stamp.clone(),
+                other.action_tachygrams().collect(),
+                [other.fee_descriptor()].into(),
+            ),
+        )
+        .unwrap();
+    let divisor_pairs = reproven.action_tachygrams().collect();
+    let divisor_fees = [reproven.fee_descriptor()].into();
+    let quotient = dividend
+        .unmerge(
+            application,
+            rng,
+            (
+                original
+                    .action_tachygrams()
+                    .chain(other.action_tachygrams())
+                    .collect(),
+                [original.fee_descriptor(), other.fee_descriptor()].into(),
+            ),
+            (reproven.stamp, divisor_pairs, divisor_fees),
+        )
+        .unwrap();
+    assert!(
+        !quotient
+            .verify_proof(
+                application,
+                rng,
+                original
+                    .actions
+                    .iter()
+                    .chain(&other.actions)
+                    .map(|action| action.digest().unwrap())
+                    .chain([other.fee_descriptor().digest().unwrap()]),
+            )
+            .unwrap()
+    );
+}
+
+#[test]
 fn unmerge_binds_its_sets() {
     let application = &*application();
     let rng = &mut StdRng::seed_from_u64(0);
