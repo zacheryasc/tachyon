@@ -75,12 +75,13 @@ impl<'dr, D: Driver<'dr, F = Fp>, const N: usize> Bits<'dr, D, N> {
     /// maximal zero run. Its sum has at most 254 Boolean terms and cannot wrap.
     #[expect(clippy::indexing_slicing, reason = "fixed 255-bit canonical encoding")]
     fn enforce_canonical(&self, dr: &mut D) -> Result<()> {
-        let bits = &self.0;
-        if bits.len() != 255 {
-            return Err(ragu_core::Error::InvalidWitness(
-                "canonical field representation must have 255 bits".into(),
-            ));
+        const {
+            assert!(
+                N == 255,
+                "canonical field representation must have 255 bits"
+            );
         }
+        let bits = &self.0;
         let maximum = (-Fp::ONE).to_le_bits();
         let mut equal = bits[254].element();
         let mut run = Element::zero(dr);
