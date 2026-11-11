@@ -617,12 +617,13 @@ impl Step<Pasta> for UnspentLift {
         let right_encoded =
             Encoded::<D, Self::Right, HEADER_SIZE>::new(dr, &mut (), right.clone())?;
         let epoch_element = right_encoded.as_gadget().epoch.clone();
-        let epoch_next = circuit::EpochIndex::new(dr, &epoch_element)
+        let checked_next = circuit::EpochIndex::new(dr, &epoch_element)
             .and_then(|checked| checked.next(dr))
             .map_err(|_err| {
                 ragu_core::Error::InvalidWitness("UnspentLift: bucket has no next epoch".into())
-            })?
-            .into_element();
+            })?;
+        let next_value = checked_next.value()?;
+        let epoch_next = checked_next.into_element();
         let unspent_epoch = left_encoded.as_gadget().epoch_next.clone();
         unspent_epoch
             .enforce_equal(dr, &epoch_element)
@@ -682,11 +683,6 @@ impl Step<Pasta> for UnspentLift {
             ragu_core::Error::InvalidWitness("UnspentLift: found nullifier in the bucket".into())
         })?;
 
-        let next_value = D::try_just(|| {
-            EpochIndex::try_from(*epoch_next.value().take()).map_err(|_err| {
-                ragu_core::Error::InvalidWitness("range-checked epoch conversion failed".into())
-            })
-        })?;
         let output = D::just(|| {
             let (unspent_anchor_start, unspent_epoch_start, ..) = left.take();
             let (_, _, bucket_anchor_next, ..) = right.take();

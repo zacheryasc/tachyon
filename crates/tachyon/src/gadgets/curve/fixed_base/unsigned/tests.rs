@@ -151,7 +151,7 @@ fn walks_match_native() {
     }
     for (base, correction) in [
         (*orchard::VALUE_COMMIT_R, Ep::identity()),
-        (ACTION_AUTH_GENERATOR.to_projective(), Ep::identity()),
+        (*ACTION_AUTH_GENERATOR, Ep::identity()),
     ] {
         let wide = Table::<85>::new(base, correction);
         for bits in &cases {
@@ -303,7 +303,7 @@ fn zero_maximum_fee_commitment_is_the_blind_point() {
 
 #[test]
 fn digest_walks_match_native() {
-    let generator = ACTION_AUTH_GENERATOR.to_projective();
+    let generator = *ACTION_AUTH_GENERATOR;
     for digest in [Fp::ZERO, Fp::ONE, -Fp::ONE, Fp::from(2).pow_u64(254)] {
         let expected = generator * Fq::from_bytes(digest.to_bytes()).unwrap();
         let output = Simulator::<Fp>::simulate(digest, |dr, witness| {

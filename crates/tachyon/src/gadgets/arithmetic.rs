@@ -15,6 +15,7 @@ use udon::field::Field as _;
 use crate::{
     constants::EPOCH_MAX,
     pasta::{Fp, Fq},
+    primitives,
 };
 
 /// A fixed-width Boolean decomposition.
@@ -48,7 +49,10 @@ impl<'dr, D: Driver<'dr, F = Fp>, const N: usize> Bits<'dr, D, N> {
         recomposed.enforce_equal(dr, value)?;
         let result = Self(bits);
         if N == 255 {
-            result.enforce_canonical(dr)?;
+            // Only instantiate the width-specific checker for 255 bits.
+            // Cloning the Boolean handles adds no circuit constraints.
+            Bits::<D, 255>(FixedVec::from_fn(|index| result.0[index].clone()))
+                .enforce_canonical(dr)?;
         }
         Ok(result)
     }
@@ -74,12 +78,13 @@ impl<'dr, D: Driver<'dr, F = Fp>, const N: usize> Bits<'dr, D, N> {
     /// maximal zero run. Its sum has at most 254 Boolean terms and cannot wrap.
     #[expect(clippy::indexing_slicing, reason = "fixed 255-bit canonical encoding")]
     fn enforce_canonical(&self, dr: &mut D) -> Result<()> {
-        let bits = &self.0;
-        if bits.len() != 255 {
-            return Err(ragu_core::Error::InvalidWitness(
-                "canonical field representation must have 255 bits".into(),
-            ));
+        const {
+            assert!(
+                N == 255,
+                "canonical field representation must have 255 bits"
+            );
         }
+        let bits = &self.0;
         let maximum = (-Fp::ONE).to_le_bits();
         let mut equal = bits[254].element();
         let mut run = Element::zero(dr);
@@ -135,6 +140,15 @@ impl<'dr, D: Driver<'dr, F = Fp>> EpochIndex<'dr, D> {
         let one = Element::constant(dr, Fp::ONE);
         let next = self.0.add(dr, &one);
         Self::new(dr, &next)
+    }
+
+    /// The native index. Witness generation rejects an out-of-range element,
+    /// as the range check rejects it in the circuit.
+    pub(crate) fn value(&self) -> Result<DriverValue<D, primitives::EpochIndex>> {
+        D::try_just(|| {
+            primitives::EpochIndex::try_from(*self.0.value().take())
+                .map_err(|_err| ragu_core::Error::InvalidWitness("epoch index out of range".into()))
+        })
     }
 
     pub(crate) fn into_element(self) -> Element<'dr, D> {

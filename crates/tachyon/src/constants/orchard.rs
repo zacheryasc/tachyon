@@ -8,10 +8,10 @@ use udon::curve::Affine as _;
 use crate::pasta::{Ep, EpAffine};
 
 /// Orchard's value-commitment domain (§5.4.8.3).
-pub(crate) const VALUE_COMMITMENT_DOMAIN: &str = "z.cash:Orchard-cv";
+const VALUE_COMMITMENT_DOMAIN: &str = "z.cash:Orchard-cv";
 
 /// Orchard's spend-authorization domain, also used for Tachyon actions.
-pub(crate) const ACTION_AUTH_DOMAIN: &str = "z.cash:Orchard";
+const ACTION_AUTH_DOMAIN: &str = "z.cash:Orchard";
 
 lazy_static! {
     /// Generator $\mathcal{V}$ for value commitments.
@@ -31,10 +31,11 @@ lazy_static! {
     };
 
     /// Orchard RedPallas action-authorizing generator.
-    pub(crate) static ref ACTION_AUTH_GENERATOR: EpAffine = {
+    pub(crate) static ref ACTION_AUTH_GENERATOR: Ep = {
         #[expect(clippy::expect_used, reason = "the fixed generator has a canonical encoding")]
         EpAffine::from_bytes(Point::hash_to_curve(ACTION_AUTH_DOMAIN)(b"G").to_bytes())
             .expect("valid Orchard generator")
+            .to_projective()
     };
 }
 
@@ -52,6 +53,6 @@ mod tests {
         let expected = EpAffine::from(ActionVerificationKey(reddsa::VerificationKey::from(
             &scalar_one,
         )));
-        assert_eq!(*ACTION_AUTH_GENERATOR, expected);
+        assert_eq!(*ACTION_AUTH_GENERATOR, expected.to_projective());
     }
 }

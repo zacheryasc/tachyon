@@ -260,12 +260,13 @@ impl Step<Pasta> for QrSpendableInit {
                 "QrSpendableInit: segment does not close where the bucket does".into(),
             )
         })?;
-        let next = circuit::EpochIndex::new(dr, &bucket_epoch)
+        let checked_next = circuit::EpochIndex::new(dr, &bucket_epoch)
             .and_then(|checked| checked.next(dr))
             .map_err(|_err| {
                 ragu_core::Error::InvalidWitness("QrSpendableInit: bucket has no next epoch".into())
-            })?
-            .into_element();
+            })?;
+        let next_value = checked_next.value()?;
+        let next = checked_next.into_element();
         let unspent_next = left_encoded.as_gadget().epoch_next.clone();
         // Defensive: the anchor equality already rejects a wrong epoch label.
         next.enforce_equal(dr, &unspent_next).map_err(|_err| {
@@ -278,11 +279,6 @@ impl Step<Pasta> for QrSpendableInit {
         let evaluation = oracles.query(dr, Slot::right(0), &x)?;
         evaluation.enforce_zero(dr).map_err(|_err| {
             ragu_core::Error::InvalidWitness("QrSpendableInit: commitment not in bucket".into())
-        })?;
-        let next_value = D::try_just(|| {
-            EpochIndex::try_from(*next.value().take()).map_err(|_err| {
-                ragu_core::Error::InvalidWitness("range-checked epoch conversion failed".into())
-            })
         })?;
         let output = D::just(|| {
             let data = left.take();
