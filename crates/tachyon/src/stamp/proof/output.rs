@@ -12,14 +12,21 @@ use ragu_core::{
     maybe::Maybe as _,
     pasta::Pasta,
 };
-use ragu_primitives::{Element, Point, allocator::Allocator, io::Write};
-use udon::curve::EndomorphismAffine;
+use ragu_primitives::{
+    Boolean, Element, GadgetExt as _,
+    allocator::Allocator,
+    io::Write,
+    multipack,
+    vec::{ConstLen, FixedVec},
+};
+use udon::{curve::Affine as _, field::Field as _};
 
+use super::ValueCommitment;
 use crate::{
     Tachygram,
     constants::MAX_MONEY,
     digest::poseidon,
-    gadgets::{arithmetic as circuit, curve},
+    gadgets::fixed_base,
     note::Note,
     pasta::{EpAffine, Fp, Fq},
     value,
@@ -35,16 +42,16 @@ use crate::{
 pub struct OutputHeader;
 
 #[derive(Gadget, Write)]
-pub struct OutputHeaderOutput<'dr, D: Driver<'dr>, C: EndomorphismAffine<Base = D::F>> {
+pub struct OutputHeaderOutput<'dr, D: Driver<'dr>> {
     pub cm: Element<'dr, D>,
     pub pad: Element<'dr, D>,
-    pub cv: Point<'dr, D, C>,
+    pub cv: ValueCommitment<'dr, D>,
 }
 
 impl Header<Fp> for OutputHeader {
     /// `(cm, pad, cv)`
     type Data = (Tachygram, Tachygram, value::Commitment);
-    type Output = Kind![Fp; OutputHeaderOutput<'_, _, EpAffine>];
+    type Output = Kind![Fp; OutputHeaderOutput<'_, _>];
 
     const SUFFIX: Suffix = Suffix::new(7);
 
@@ -64,7 +71,7 @@ impl Header<Fp> for OutputHeader {
                 allocator,
                 witness.as_ref().map(|fields| Fp::from(fields.1)),
             )?,
-            cv: Point::alloc(dr, witness.as_ref().map(|fields| EpAffine::from(fields.2)))?,
+            cv: ValueCommitment::alloc(dr, allocator, witness.as_ref().map(|fields| fields.2))?,
         })
     }
 }
@@ -115,7 +122,23 @@ impl Step<Pasta> for OutputBind {
                 .as_ref()
                 .map(|data| Fp::from(u64::from(data.0.value))),
         )?;
-        let amount_bits = circuit::Bits::<D, 51>::bounded(dr, &amount, MAX_MONEY)?;
+        let bound = Element::constant(dr, Fp::from(MAX_MONEY));
+        let slack = bound.sub(dr, &amount);
+        #[expect(clippy::indexing_slicing, reason = "fixed 51-bit decomposition")]
+        let slack_bits = FixedVec::<_, ConstLen<51>>::try_from_fn(|index| {
+            Boolean::alloc(
+                dr,
+                &mut (),
+                slack
+                    .value()
+                    .map(|candidate| candidate.to_le_bits().as_ref()[index]),
+            )
+        })?;
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "multipack packs 51 bits into one chunk"
+        )]
+        multipack(dr, &slack_bits)?[0].enforce_equal(dr, &slack)?;
         let rcm = Element::alloc(
             dr,
             &mut (),
@@ -137,18 +160,25 @@ impl Step<Pasta> for OutputBind {
             poseidon::with_sponge::pad_tachygram(dr, &rcm, &pk, &amount, &psi)?.squeeze(dr)?;
         cm.clone().enforce_nonzero(dr)?;
         pad.clone().enforce_nonzero(dr)?;
-        let rcv_bits =
-            circuit::Bits::<D, 255>::free(dr, &witness.as_ref().map(|data| Fq::from(data.1)))?;
-        let cv =
-            curve::fixed_base::unsigned::NEG_V_TABLE.commitment(dr, &amount_bits, &rcv_bits)?;
-        let output = D::just(|| {
-            (
+        let blind_point =
+            fixed_base::R_TABLE.mul_free(dr, &witness.as_ref().map(|data| Fq::from(data.1)))?;
+        let cv = fixed_base::NEG_V_TABLE.mul_bounded(dr, &amount, &blind_point)?;
+        let [cv_x, cv_y] = cv.each_ref().map(Element::value);
+        let output = D::try_just(|| {
+            let commitment = EpAffine::from_xy(*cv_x.take(), *cv_y.take()).ok_or_else(|| {
+                ragu_core::Error::InvalidWitness("OutputBind: cv is not on the curve".into())
+            })?;
+            Ok((
                 Tachygram::from(*cm.value().take()),
                 Tachygram::from(*pad.value().take()),
-                value::Commitment::from(cv.value().take()),
-            )
-        });
-        let fields = OutputHeaderOutput { cm, pad, cv };
+                value::Commitment::from(commitment),
+            ))
+        })?;
+        let fields = OutputHeaderOutput {
+            cm,
+            pad,
+            cv: ValueCommitment { coordinates: cv },
+        };
         Ok((
             (left_encoded, right_encoded, Encoded::from_gadget(fields)),
             output,

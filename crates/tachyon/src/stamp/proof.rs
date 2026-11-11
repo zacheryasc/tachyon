@@ -33,16 +33,47 @@ use core::mem;
 use lazy_static::lazy_static;
 use ragu::{Application, ApplicationBuilder, RegistryTags, step::Step};
 use ragu_circuits::polynomials::ProductionRank;
-use ragu_core::{drivers::Driver, pasta::Pasta};
-use ragu_primitives::Element;
+use ragu_core::{
+    drivers::{Driver, DriverValue},
+    gadgets::Gadget,
+    maybe::Maybe as _,
+    pasta::Pasta,
+};
+use ragu_primitives::{Element, allocator::Allocator, io::Write};
 use udon::curve::Affine as _;
 
 use crate::{
-    constants::EPOCH_MAX,
-    gadgets::arithmetic::Bits,
+    gadgets::arithmetic::EpochIndex,
     pasta,
     primitives::{TachygramSetBridge, TachygramSetCommit},
+    value,
 };
+
+/// The affine coordinates of a value commitment `cv` on a header.
+#[derive(Gadget, Write)]
+pub struct ValueCommitment<'dr, D: Driver<'dr>> {
+    pub coordinates: [Element<'dr, D>; 2],
+}
+
+impl<'dr, D: Driver<'dr, F = pasta::Fp>> ValueCommitment<'dr, D> {
+    fn alloc<A: Allocator<'dr, D>>(
+        dr: &mut D,
+        allocator: &mut A,
+        cv: DriverValue<D, value::Commitment>,
+    ) -> ragu_core::Result<Self> {
+        let coordinates = D::try_just(|| {
+            pasta::EpAffine::from(cv.take())
+                .coordinates()
+                .ok_or_else(|| ragu_core::Error::InvalidWitness("cv is the identity".into()))
+        })?;
+        Ok(Self {
+            coordinates: [
+                Element::alloc(dr, allocator, coordinates.as_ref().map(|pair| pair.0))?,
+                Element::alloc(dr, allocator, coordinates.as_ref().map(|pair| pair.1))?,
+            ],
+        })
+    }
+}
 
 /// Step admission checks for the stamp's epoch and nonempty tachygram set.
 fn enforce_stamp_domain<'dr, D: Driver<'dr, F = pasta::Fp>>(
@@ -66,7 +97,7 @@ fn enforce_stamp_domain<'dr, D: Driver<'dr, F = pasta::Fp>>(
         .element()
         .enforce_zero(dr)
         .map_err(|_err| ragu_core::Error::InvalidWitness("invalid anchor step".into()))?;
-    Bits::<D, 32>::bounded(dr, epoch, u64::from(EPOCH_MAX))?;
+    EpochIndex::new(dr, epoch)?;
     Ok(())
 }
 

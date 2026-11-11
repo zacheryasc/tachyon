@@ -34,7 +34,13 @@ use ragu_core::{
     maybe::Maybe as _,
     pasta::Pasta,
 };
-use ragu_primitives::{Boolean, Element, GadgetExt as _, allocator::Allocator, io::Write};
+use ragu_primitives::{
+    Boolean, Element, GadgetExt as _,
+    allocator::Allocator,
+    io::Write,
+    multipack,
+    vec::{ConstLen, FixedVec},
+};
 use udon::{curve::Affine as _, field::Field as _};
 
 use super::{
@@ -44,7 +50,6 @@ use super::{
 pub use crate::collections::qr::classify;
 use crate::{
     collections::qr::QUADRATIC_NON_RESIDUE,
-    constants::EPOCH_MAX,
     digest::poseidon,
     gadgets::arithmetic as circuit,
     pasta::{EpAffine, Fp},
@@ -491,7 +496,7 @@ impl Step<Pasta> for QrEmptyIntakeSeed {
             Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.2)))?;
         let epoch_element =
             Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.1)))?;
-        circuit::Bits::<D, 32>::bounded(dr, &epoch_element, u64::from(EPOCH_MAX))?;
+        circuit::EpochIndex::new(dr, &epoch_element)?;
         let output = D::try_just(|| {
             let (anchor, epoch, discriminant) = witness.take();
             let () = left.take();
@@ -978,11 +983,28 @@ impl Step<Pasta> for QrSideDescend {
         }
         let depth_element = left_encoded.as_gadget().depth.clone();
         let profile_bits = left_encoded.as_gadget().bits.clone();
-        circuit::Bits::<D, 5>::bounded(dr, &depth_element, 31).map_err(|_err| {
-            ragu_core::Error::InvalidWitness(
-                "QrSideDescend: profile has no bit left for another side".into(),
-            )
-        })?;
+        // Both the depth and 31 - depth fit 5 bits, so neither wraps.
+        let maximum = Element::constant(dr, Fp::from(31));
+        let remaining = maximum.sub(dr, &depth_element);
+        #[expect(clippy::indexing_slicing, reason = "fixed 5-bit decompositions")]
+        for value in [&depth_element, &remaining] {
+            let bits = FixedVec::<_, ConstLen<5>>::try_from_fn(|index| {
+                Boolean::alloc(
+                    dr,
+                    &mut (),
+                    value
+                        .value()
+                        .map(|candidate| candidate.to_le_bits().as_ref()[index]),
+                )
+            })?;
+            multipack(dr, &bits)?[0]
+                .enforce_equal(dr, value)
+                .map_err(|_err| {
+                    ragu_core::Error::InvalidWitness(
+                        "QrSideDescend: profile has no bit left for another side".into(),
+                    )
+                })?;
+        }
         let bit = Boolean::alloc(dr, &mut (), witness.as_ref().map(|data| data.0))?;
         let base_discriminant = left_encoded.as_gadget().discriminant.clone();
         let discriminant_element = base_discriminant.add(dr, &depth_element);
