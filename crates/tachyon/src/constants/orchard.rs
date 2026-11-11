@@ -8,10 +8,10 @@ use udon::curve::Affine as _;
 use crate::pasta::{Ep, EpAffine};
 
 /// Orchard's value-commitment domain (§5.4.8.3).
-pub(crate) const VALUE_COMMITMENT_DOMAIN: &str = "z.cash:Orchard-cv";
+const VALUE_COMMITMENT_DOMAIN: &str = "z.cash:Orchard-cv";
 
 /// Orchard's spend-authorization domain, also used for Tachyon actions.
-pub(crate) const ACTION_AUTH_DOMAIN: &str = "z.cash:Orchard";
+const ACTION_AUTH_DOMAIN: &str = "z.cash:Orchard";
 
 lazy_static! {
     /// Generator $\mathcal{V}$ for value commitments.
