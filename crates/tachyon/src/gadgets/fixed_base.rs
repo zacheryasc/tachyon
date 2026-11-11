@@ -2,23 +2,24 @@
 //!
 //! Window $i$ holds little-endian bits of $k_i \in [0, 8)$. Interior windows
 //! add $[(k_i + 2) 8^i]B$, and the top window adds
-//! $[k_{W-1} 8^{W-1} - \sum_{i < W-1} 2 \cdot 8^i]B + C$, so the walk computes
-//! $[\sum_i k_i 8^i]B + C$ for the binary value of the bits. Ragu has no
-//! lookups, so halo2's Lagrange interpolation becomes a two-gate selection
-//! precomputed per window (see [`Window`]).
+//! $[k_{W-1} 8^{W-1} - \sum_{i < W-1} 2 \cdot 8^i]B + C$, so the
+//! multiplication computes $[\sum_i k_i 8^i]B + C$ for the binary value of the
+//! bits. Ragu has no lookups, so halo2's Lagrange interpolation becomes a
+//! two-gate selection precomputed per window (see [`Window`]).
 //!
-//! [`Walk`] constrains its running sum's coordinates directly. Each window's
+//! The running sum's coordinates are constrained directly. Each window's
 //! digit is selected exactly from Boolean bits, so for every assignment, free
 //! bits included, the interior prefix satisfies
 //! $0 < A_j \le 9(8^j - 1)/7 < 2 \cdot 8^j \le D_j$ and
 //! $A_j + D_j \le 9(8^{j+1} - 1)/7 < q$ for $j \le 83$: no interior addition
 //! meets equal or inverse operands, so its slope gate alone fixes the slope.
 //! No such bound covers the top addition or a join with a variable point, and
-//! there the walk constrains the x difference nonzero. A walk is therefore
-//! unsatisfiable when its result would be the identity (e.g. $k \equiv 0$ on
-//! a zero correction) or when the prefix equals the top entry, a doubling. A
-//! value walk joins onto the blind point $P$ before its top entry, so $v = 0$
-//! yields $P$ rather than an identity intermediate.
+//! there the multiplication constrains the x difference nonzero. A
+//! multiplication is therefore unsatisfiable when its result would be the
+//! identity (e.g. $k \equiv 0$ on a zero correction) or when the prefix equals
+//! the top entry, a doubling. A value multiplication joins onto the blind
+//! point $P$ before its top entry, so $v = 0$ yields $P$ rather than an
+//! identity intermediate.
 
 use alloc::vec::Vec;
 use core::array;
@@ -27,7 +28,6 @@ use lazy_static::lazy_static;
 use ragu_core::{
     Error, Result,
     drivers::{Coeff, Driver, DriverValue},
-    gadgets::Gadget,
     maybe::Maybe as _,
 };
 use ragu_primitives::{
@@ -189,58 +189,6 @@ impl Window {
     }
 }
 
-/// The affine coordinates of a walk's running sum.
-#[derive(Gadget)]
-struct Walk<'dr, D: Driver<'dr>> {
-    x: Element<'dr, D>,
-    y: Element<'dr, D>,
-}
-
-impl<'dr, D: Driver<'dr, F = Fp>> Walk<'dr, D> {
-    /// Adds a selected interior entry in three gates. The offset bound leaves
-    /// the entry's x distinct from the sum's on every Boolean assignment, so
-    /// the slope gate alone fixes the slope.
-    fn add_interior(&self, dr: &mut D, [x, y]: [&Element<'dr, D>; 2]) -> Result<Self> {
-        let rise = y.sub(dr, &self.y);
-        let run = x.sub(dr, &self.x);
-        let slope_value = D::try_just(|| {
-            Ok(*rise.value().take()
-                * run.value().take().invert().ok_or_else(|| {
-                    Error::InvalidWitness("interior walk entry shares the sum's x".into())
-                })?)
-        })?;
-        let (slope, run_wire, rise_wire) = dr.mul(|| {
-            Ok((
-                Coeff::Arbitrary(*slope_value.snag()),
-                Coeff::Arbitrary(*run.value().take()),
-                Coeff::Arbitrary(*rise.value().take()),
-            ))
-        })?;
-        dr.enforce_equal(&run_wire, run.wire())?;
-        dr.enforce_equal(&rise_wire, rise.wire())?;
-        self.add_with_slope(dr, &Element::promote(slope, slope_value), x)
-    }
-
-    /// Adds a point in four gates, constraining its x distinct from the sum's.
-    fn add_checked(&self, dr: &mut D, [x, y]: [&Element<'dr, D>; 2]) -> Result<Self> {
-        let run = x.sub(dr, &self.x).enforce_nonzero(dr)?;
-        let slope = y.sub(dr, &self.y).divide(dr, &run)?;
-        self.add_with_slope(dr, &slope, x)
-    }
-
-    fn add_with_slope(
-        &self,
-        dr: &mut D,
-        slope: &Element<'dr, D>,
-        x: &Element<'dr, D>,
-    ) -> Result<Self> {
-        let sum_x = slope.square(dr)?.sub(dr, &self.x).sub(dr, x);
-        let difference = self.x.sub(dr, &sum_x);
-        let sum_y = slope.mul(dr, &difference)?.sub(dr, &self.y);
-        Ok(Self { x: sum_x, y: sum_y })
-    }
-}
-
 /// A radix-8 table of $W$ windows for the base $B$ with correction $C$.
 pub(crate) struct Table<const W: usize> {
     // Native constant storage only. Circuit iteration is bounded by const W.
@@ -286,37 +234,88 @@ impl<const W: usize> Table<W> {
         &self,
         dr: &mut D,
         bits: &FixedVec<Boolean<'dr, D>, ConstLen<N>>,
-    ) -> Result<(Walk<'dr, D>, [Element<'dr, D>; 2])> {
+    ) -> Result<[[Element<'dr, D>; 2]; 2]> {
         const {
             assert!(W > 1 && W <= 85, "the offset bound covers W=2..85");
             assert!(N == 3 * W, "the bit width must match the fixed-base table");
         }
         let window = |index: usize| [&bits[3 * index], &bits[3 * index + 1], &bits[3 * index + 2]];
-        let [x, y] = self.low[0].select(dr, window(0))?;
-        let mut prefix = Walk { x, y };
+        let mut prefix = self.low[0].select(dr, window(0))?;
         for index in 1..W - 1 {
-            let entry = self.low[index].select(dr, window(index))?;
-            prefix = prefix.add_interior(dr, entry.each_ref())?;
+            let [x, y] = self.low[index].select(dr, window(index))?;
+            // The offset bound leaves the entry's x distinct from the
+            // prefix's on every Boolean assignment, so the slope gate alone
+            // fixes the slope.
+            let [prefix_x, prefix_y] = prefix.each_ref();
+            let rise = y.sub(dr, prefix_y);
+            let run = x.sub(dr, prefix_x);
+            let slope_value = D::try_just(|| {
+                Ok(*rise.value().take()
+                    * run.value().take().invert().ok_or_else(|| {
+                        Error::InvalidWitness("interior window entry shares the prefix's x".into())
+                    })?)
+            })?;
+            let (slope, run_wire, rise_wire) = dr.mul(|| {
+                Ok((
+                    Coeff::Arbitrary(*slope_value.snag()),
+                    Coeff::Arbitrary(*run.value().take()),
+                    Coeff::Arbitrary(*rise.value().take()),
+                ))
+            })?;
+            dr.enforce_equal(&run_wire, run.wire())?;
+            dr.enforce_equal(&rise_wire, rise.wire())?;
+            prefix = Self::add_with_slope(
+                dr,
+                prefix.each_ref(),
+                &Element::promote(slope, slope_value),
+                &x,
+            )?;
         }
         let top = self.top.select(dr, window(W - 1))?;
-        Ok((prefix, top))
+        Ok([prefix, top])
+    }
+
+    /// Adds `point` to `sum` in four gates, constraining their x coordinates
+    /// distinct.
+    fn add_checked<'dr, D: Driver<'dr, F = Fp>>(
+        dr: &mut D,
+        sum: [&Element<'dr, D>; 2],
+        [x, y]: [&Element<'dr, D>; 2],
+    ) -> Result<[Element<'dr, D>; 2]> {
+        let [sum_x, sum_y] = sum;
+        let run = x.sub(dr, sum_x).enforce_nonzero(dr)?;
+        let slope = y.sub(dr, sum_y).divide(dr, &run)?;
+        Self::add_with_slope(dr, sum, &slope, x)
+    }
+
+    /// Completes an addition onto `sum` from the slope and the other
+    /// operand's x coordinate, in two gates.
+    fn add_with_slope<'dr, D: Driver<'dr, F = Fp>>(
+        dr: &mut D,
+        [sum_x, sum_y]: [&Element<'dr, D>; 2],
+        slope: &Element<'dr, D>,
+        x: &Element<'dr, D>,
+    ) -> Result<[Element<'dr, D>; 2]> {
+        let result_x = slope.square(dr)?.sub(dr, sum_x).sub(dr, x);
+        let difference = sum_x.sub(dr, &result_x);
+        let result_y = slope.mul(dr, &difference)?.sub(dr, sum_y);
+        Ok([result_x, result_y])
     }
 
     /// The coordinates of $\[k\]B + C + P$ for the binary value $k$ of
     /// `bits`, joining `onto` ($P$, when present) between the prefix and the
     /// top entry.
-    fn walk<'dr, D: Driver<'dr, F = Fp>, const N: usize>(
+    fn multiply<'dr, D: Driver<'dr, F = Fp>, const N: usize>(
         &self,
         dr: &mut D,
         bits: &FixedVec<Boolean<'dr, D>, ConstLen<N>>,
         onto: Option<&[Element<'dr, D>; 2]>,
     ) -> Result<[Element<'dr, D>; 2]> {
-        let (mut sum, top) = self.prefix_and_top(dr, bits)?;
+        let [mut sum, top] = self.prefix_and_top(dr, bits)?;
         if let Some(point) = onto {
-            sum = sum.add_checked(dr, point.each_ref())?;
+            sum = Self::add_checked(dr, sum.each_ref(), point.each_ref())?;
         }
-        let Walk { x, y } = sum.add_checked(dr, top.each_ref())?;
-        Ok([x, y])
+        Self::add_checked(dr, sum.each_ref(), top.each_ref())
     }
 }
 
@@ -347,7 +346,7 @@ impl Table<85> {
         let high = packed[1].scale(dr, Coeff::Arbitrary(Fp::from(2).pow_u64(254)));
         packed[0].add(dr, &high).enforce_equal(dr, digest)?;
         Self::enforce_canonical(dr, &bits)?;
-        self.walk(dr, &bits, onto)
+        self.multiply(dr, &bits, onto)
     }
 
     /// The coordinates of $\[k\]B$ for some $k$ whose 255 free bits nothing
@@ -367,7 +366,7 @@ impl Table<85> {
                     .map(|candidate| candidate.to_le_bits().as_ref()[index]),
             )
         })?;
-        self.walk(dr, &bits, None)
+        self.multiply(dr, &bits, None)
     }
 
     /// Compares the canonical field bits with $p - 1$, sharing a product across
@@ -427,7 +426,7 @@ impl Table<17> {
             )
         })?;
         multipack(dr, &bits)?[0].enforce_equal(dr, value)?;
-        self.walk(dr, &bits, Some(onto))
+        self.multiply(dr, &bits, Some(onto))
     }
 }
 

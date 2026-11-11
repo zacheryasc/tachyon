@@ -21,7 +21,7 @@ use ragu_primitives::{
 };
 use udon::{curve::Affine as _, field::Field as _};
 
-use super::{delegation::NoteSecret, spendable::NoteSpendable};
+use super::{ValueCommitment, delegation::NoteSecret, spendable::NoteSpendable};
 use crate::{
     constants::MAX_MONEY,
     digest::poseidon,
@@ -52,7 +52,7 @@ pub struct SpendHeaderOutput<'dr, D: Driver<'dr>> {
     pub nf_next: Element<'dr, D>,
     pub anchor: Element<'dr, D>,
     pub pk: Element<'dr, D>,
-    pub cv: [Element<'dr, D>; 2],
+    pub cv: ValueCommitment<'dr, D>,
 }
 
 impl Header<Fp> for SpendHeader {
@@ -74,11 +74,6 @@ impl Header<Fp> for SpendHeader {
         allocator: &mut A,
         witness: DriverValue<D, Self::Data>,
     ) -> ragu_core::Result<Bound<'dr, D, Self::Output>> {
-        let cv = D::try_just(|| {
-            EpAffine::from(witness.as_ref().take().5)
-                .coordinates()
-                .ok_or_else(|| ragu_core::Error::InvalidWitness("cv is the identity".into()))
-        })?;
         Ok(SpendHeaderOutput {
             cm: Element::alloc(
                 dr,
@@ -105,10 +100,7 @@ impl Header<Fp> for SpendHeader {
                 allocator,
                 witness.as_ref().map(|fields| Fp::from(fields.4)),
             )?,
-            cv: [
-                Element::alloc(dr, allocator, cv.as_ref().map(|coordinates| coordinates.0))?,
-                Element::alloc(dr, allocator, cv.as_ref().map(|coordinates| coordinates.1))?,
-            ],
+            cv: ValueCommitment::alloc(dr, allocator, witness.as_ref().map(|fields| fields.5))?,
         })
     }
 }
@@ -267,7 +259,7 @@ impl Step<Pasta> for SpendBind {
             nf_next,
             anchor: left_encoded.as_gadget().anchor.clone(),
             pk: right_encoded.as_gadget().pk.clone(),
-            cv,
+            cv: ValueCommitment { coordinates: cv },
         };
         Ok((
             (left_encoded, right_encoded, Encoded::from_gadget(fields)),

@@ -21,6 +21,7 @@ use ragu_primitives::{
 };
 use udon::{curve::Affine as _, field::Field as _};
 
+use super::ValueCommitment;
 use crate::{
     Tachygram,
     constants::MAX_MONEY,
@@ -44,7 +45,7 @@ pub struct OutputHeader;
 pub struct OutputHeaderOutput<'dr, D: Driver<'dr>> {
     pub cm: Element<'dr, D>,
     pub pad: Element<'dr, D>,
-    pub cv: [Element<'dr, D>; 2],
+    pub cv: ValueCommitment<'dr, D>,
 }
 
 impl Header<Fp> for OutputHeader {
@@ -59,11 +60,6 @@ impl Header<Fp> for OutputHeader {
         allocator: &mut A,
         witness: DriverValue<D, Self::Data>,
     ) -> ragu_core::Result<Bound<'dr, D, Self::Output>> {
-        let cv = D::try_just(|| {
-            EpAffine::from(witness.as_ref().take().2)
-                .coordinates()
-                .ok_or_else(|| ragu_core::Error::InvalidWitness("cv is the identity".into()))
-        })?;
         Ok(OutputHeaderOutput {
             cm: Element::alloc(
                 dr,
@@ -75,10 +71,7 @@ impl Header<Fp> for OutputHeader {
                 allocator,
                 witness.as_ref().map(|fields| Fp::from(fields.1)),
             )?,
-            cv: [
-                Element::alloc(dr, allocator, cv.as_ref().map(|coordinates| coordinates.0))?,
-                Element::alloc(dr, allocator, cv.as_ref().map(|coordinates| coordinates.1))?,
-            ],
+            cv: ValueCommitment::alloc(dr, allocator, witness.as_ref().map(|fields| fields.2))?,
         })
     }
 }
@@ -181,7 +174,11 @@ impl Step<Pasta> for OutputBind {
                 value::Commitment::from(commitment),
             ))
         })?;
-        let fields = OutputHeaderOutput { cm, pad, cv };
+        let fields = OutputHeaderOutput {
+            cm,
+            pad,
+            cv: ValueCommitment { coordinates: cv },
+        };
         Ok((
             (left_encoded, right_encoded, Encoded::from_gadget(fields)),
             output,

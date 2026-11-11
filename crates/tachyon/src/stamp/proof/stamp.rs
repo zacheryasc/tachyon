@@ -280,7 +280,7 @@ impl Step<Pasta> for OutputAction {
         let theta = Element::alloc(dr, &mut (), witness.as_ref().map(|data| data.0.0))?;
         let alpha = poseidon::with_sponge::alpha_output(dr, &theta, &cm_root)?.squeeze(dr)?;
         let [rk_x, rk_y] = fixed_base::G_TABLE.mul_canonical(dr, &alpha, None)?;
-        let [cv_x, cv_y] = left_encoded.as_gadget().cv.clone();
+        let [cv_x, cv_y] = left_encoded.as_gadget().cv.coordinates.clone();
         let action_root = poseidon::with_sponge::action_digest(dr, (&cv_x, &cv_y), (&rk_x, &rk_y))?
             .squeeze(dr)?;
         #[expect(clippy::indexing_slicing, reason = "framework enforces NUM_STAGED = 1")]
@@ -430,7 +430,7 @@ impl Step<Pasta> for SpendAction {
         let theta = Element::alloc(dr, &mut (), witness.as_ref().map(|data| data.0.0))?;
         let alpha = poseidon::with_sponge::alpha_spend(dr, &theta, &cm)?.squeeze(dr)?;
         let [rk_x, rk_y] = fixed_base::G_TABLE.mul_canonical(dr, &alpha, Some(&[ak_x, ak_y]))?;
-        let [cv_x, cv_y] = left_encoded.as_gadget().cv.clone();
+        let [cv_x, cv_y] = left_encoded.as_gadget().cv.coordinates.clone();
         let action_root = poseidon::with_sponge::action_digest(dr, (&cv_x, &cv_y), (&rk_x, &rk_y))?
             .squeeze(dr)?;
         #[expect(clippy::indexing_slicing, reason = "framework enforces NUM_STAGED = 1")]
@@ -814,7 +814,7 @@ impl Step<Pasta> for ActionLift {
 pub struct FeeFuse;
 
 lazy_static! {
-    // s = MAX_MONEY - maximum, so the corrected walk computes [-maximum]V.
+    // s = MAX_MONEY - maximum, so the corrected multiplication computes [-maximum]V.
     static ref FEE_V_TABLE: fixed_base::Table<17> = fixed_base::Table::new(
         *orchard::VALUE_COMMIT_V,
         -*orchard::VALUE_COMMIT_V * Fq::from(MAX_MONEY)

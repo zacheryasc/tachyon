@@ -20,11 +20,11 @@ fn alloc_bits<'dr, const N: usize>(
     })
 }
 
-fn walk<const W: usize, const N: usize>(table: &Table<W>, bits: [bool; N]) -> Result<(Fp, Fp)> {
+fn multiply<const W: usize, const N: usize>(table: &Table<W>, bits: [bool; N]) -> Result<(Fp, Fp)> {
     let mut output = (Fp::ZERO, Fp::ZERO);
     Simulator::<Fp>::simulate((), |dr, _| {
         let allocated = alloc_bits(dr, bits)?;
-        let [x, y] = table.walk(dr, &allocated, None)?;
+        let [x, y] = table.multiply(dr, &allocated, None)?;
         output = (*x.value().take(), *y.value().take());
         Ok(())
     })?;
@@ -32,7 +32,7 @@ fn walk<const W: usize, const N: usize>(table: &Table<W>, bits: [bool; N]) -> Re
 }
 
 #[test]
-fn walks_compute_the_binary_value() {
+fn multiplications_compute_the_binary_value() {
     let digits: [[bool; 3]; 8] =
         array::from_fn(|digit| array::from_fn(|position| digit & (1 << position) != 0));
     let mut wide = Vec::from([
@@ -49,7 +49,7 @@ fn walks_compute_the_binary_value() {
     ] {
         for bits in &wide {
             let expected = base * scalar(bits);
-            let output = walk(table, *bits);
+            let output = multiply(table, *bits);
             if expected.is_identity() {
                 assert!(output.is_err());
             } else {
@@ -71,7 +71,7 @@ fn walks_compute_the_binary_value() {
         let table = Table::<17>::new(base, correction);
         for bits in &short {
             let expected = base * scalar(bits) + correction;
-            let output = walk(&table, *bits);
+            let output = multiply(&table, *bits);
             if expected.is_identity() {
                 assert!(output.is_err());
             } else {
@@ -98,8 +98,8 @@ fn exceptional_additions_have_no_satisfying_inverse() {
         for bits in [[false; 255], doubling_bits] {
             Simulator::<Fp>::simulate((), |dr, _| {
                 let allocated = alloc_bits(dr, bits)?;
-                let (prefix, [top_x, _]) = table.prefix_and_top(dr, &allocated)?;
-                let difference = top_x.sub(dr, &prefix.x);
+                let [[prefix_x, _], [top_x, _]] = table.prefix_and_top(dr, &allocated)?;
+                let difference = top_x.sub(dr, &prefix_x);
                 assert_eq!(*difference.value().take(), Fp::ZERO);
                 for advice in [Fp::ZERO, Fp::ONE, -Fp::ONE, Fp::from(7)] {
                     let rejection = difference
@@ -127,8 +127,8 @@ fn exceptional_additions_have_no_satisfying_inverse() {
         Simulator::<Fp>::simulate((), |dr, _| {
             let allocated = alloc_bits(dr, [false; 51])?;
             let start_x = Element::constant(dr, blind_x);
-            let (prefix, _) = V_TABLE.prefix_and_top(dr, &allocated)?;
-            let difference = start_x.sub(dr, &prefix.x);
+            let [[prefix_x, _], _] = V_TABLE.prefix_and_top(dr, &allocated)?;
+            let difference = start_x.sub(dr, &prefix_x);
             assert_eq!(*difference.value().take(), Fp::ZERO);
             for advice in [Fp::ZERO, Fp::ONE, -Fp::ONE, Fp::from(7)] {
                 let rejection = difference
@@ -191,7 +191,7 @@ fn fee_commitment_accepts_a_zero_maximum() {
 }
 
 #[test]
-fn digest_walks_use_the_canonical_value() {
+fn digest_multiplications_use_the_canonical_value() {
     let ak = *ACTION_AUTH_GENERATOR * Fq::from(5);
     let (ak_x, ak_y) = ak.to_affine().coordinates().unwrap();
     for digest in [Fp::ONE, -Fp::ONE, Fp::from(2).pow_u64(254)] {

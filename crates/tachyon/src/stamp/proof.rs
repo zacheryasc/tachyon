@@ -30,11 +30,45 @@ pub mod summary;
 use lazy_static::lazy_static;
 use ragu::{Application, ApplicationBuilder, RegistryTags};
 use ragu_circuits::{polynomials::ProductionRank, staging::wire_degree};
-use ragu_core::{Cycle, FixedGenerators as _, drivers::Driver, pasta::Pasta};
-use ragu_primitives::{ENDOSCALAR_BITS, ENDOSCALAR_PRODUCTS, Element};
+use ragu_core::{
+    Cycle, FixedGenerators as _,
+    drivers::{Driver, DriverValue},
+    gadgets::Gadget,
+    maybe::Maybe as _,
+    pasta::Pasta,
+};
+use ragu_primitives::{
+    ENDOSCALAR_BITS, ENDOSCALAR_PRODUCTS, Element, allocator::Allocator, io::Write,
+};
 use udon::curve::{Affine, Projective as _};
 
-use crate::{gadgets::arithmetic::EpochIndex, pasta, primitives::TachygramSetBridge};
+use crate::{gadgets::arithmetic::EpochIndex, pasta, primitives::TachygramSetBridge, value};
+
+/// The affine coordinates of a value commitment `cv` on a header.
+#[derive(Gadget, Write)]
+pub struct ValueCommitment<'dr, D: Driver<'dr>> {
+    pub coordinates: [Element<'dr, D>; 2],
+}
+
+impl<'dr, D: Driver<'dr, F = pasta::Fp>> ValueCommitment<'dr, D> {
+    fn alloc<A: Allocator<'dr, D>>(
+        dr: &mut D,
+        allocator: &mut A,
+        cv: DriverValue<D, value::Commitment>,
+    ) -> ragu_core::Result<Self> {
+        let coordinates = D::try_just(|| {
+            pasta::EpAffine::from(cv.take())
+                .coordinates()
+                .ok_or_else(|| ragu_core::Error::InvalidWitness("cv is the identity".into()))
+        })?;
+        Ok(Self {
+            coordinates: [
+                Element::alloc(dr, allocator, coordinates.as_ref().map(|pair| pair.0))?,
+                Element::alloc(dr, allocator, coordinates.as_ref().map(|pair| pair.1))?,
+            ],
+        })
+    }
+}
 
 /// Prepares the constant-one commitment's bridge hash without an application.
 fn empty_stamp_bridge_hash(
