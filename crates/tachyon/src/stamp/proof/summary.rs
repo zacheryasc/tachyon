@@ -134,12 +134,13 @@ impl Step<Pasta> for SummarySeed {
         let epoch_element =
             Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.1)))?;
         super::enforce_stamp_domain(dr, &epoch_element, oracles.bridge_hash())?;
-        let anchor = poseidon::with_driver::anchor_next_stamp(
+        let anchor = poseidon::with_sponge::anchor_next_stamp(
             dr,
             &previous,
             &epoch_element,
             oracles.bridge_hash(),
-        )?;
+        )?
+        .squeeze(dr)?;
         enforce_poly_equal(dr, oracles, Slot::output(0), Slot::output(1))?;
         let output = D::just(|| {
             let (anchor_prev, epoch, _) = witness.take();
@@ -216,12 +217,13 @@ impl Step<Pasta> for SummaryAdvance {
             "SummaryAdvance: extended accumulator must fold the stamp",
         )?;
         super::enforce_stamp_domain(dr, &left_encoded.as_gadget().epoch, oracles.bridge_hash())?;
-        let anchor = poseidon::with_driver::anchor_next_stamp(
+        let anchor = poseidon::with_sponge::anchor_next_stamp(
             dr,
             &left_encoded.as_gadget().anchor_end,
             &left_encoded.as_gadget().epoch,
             oracles.bridge_hash(),
-        )?;
+        )?
+        .squeeze(dr)?;
         let output = D::just(|| {
             let (summary_epoch, summary_anchor_prev, ..) = left.take();
             (

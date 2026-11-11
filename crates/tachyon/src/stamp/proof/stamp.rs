@@ -21,17 +21,15 @@ use udon::{curve::Affine as _, field::Field as _};
 use super::{output::OutputHeader, pool::AnchorSpan, spend::SpendHeader};
 use crate::{
     ActionSetPoly, TachygramSetPoly,
-    constants::MAX_MONEY,
+    constants::{MAX_MONEY, orchard},
     digest::poseidon,
     entropy::ActionEntropy,
+    gadgets::{arithmetic as circuit, curve},
     keys::{ProofAuthorizingKey, private},
     note::{self, Note},
     pasta::{EpAffine, Fp, Fq},
     primitives::{ActionDigest, Anchor, TachygramSetBridge, TachygramSetCommit, effect},
-    relations::{
-        arithmetic as circuit, curve,
-        enforce::{enforce_poly_equal, enforce_poly_product, enforce_poly_roots},
-    },
+    relations::enforce::{enforce_poly_equal, enforce_poly_product, enforce_poly_roots},
     value,
 };
 
@@ -273,18 +271,15 @@ impl Step<Pasta> for OutputAction {
         let cm_root = left_encoded.as_gadget().cm.clone();
         let pad_root = left_encoded.as_gadget().pad.clone();
         let theta = Element::alloc(dr, &mut (), witness.as_ref().map(|data| data.0.0))?;
-        let alpha = poseidon::with_driver::alpha_output(dr, &theta, &cm_root)?;
-        let alpha_bits = circuit::bits::<D, 255>(dr, &alpha)?;
-        let scaled = curve::fixed_base::unsigned::walk(
-            dr,
-            &curve::fixed_base::unsigned::G_TABLE,
-            &alpha_bits,
-        )?;
+        let alpha = poseidon::with_sponge::alpha_output(dr, &theta, &cm_root)?.squeeze(dr)?;
+        let alpha_bits = circuit::Bits::<D, 255>::new(dr, &alpha)?;
+        let scaled = curve::fixed_base::unsigned::G_TABLE.walk(dr, &alpha_bits)?;
         let rk = curve::finish(dr, &scaled)?;
         let cv = left_encoded.as_gadget().cv.clone();
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
         let [rk_x, rk_y] = curve::coordinates(dr, &rk)?;
-        let action_root = poseidon::with_driver::action_digest(dr, (&cv_x, &cv_y), (&rk_x, &rk_y))?;
+        let action_root = poseidon::with_sponge::action_digest(dr, (&cv_x, &cv_y), (&rk_x, &rk_y))?
+            .squeeze(dr)?;
         #[expect(clippy::indexing_slicing, reason = "framework enforces NUM_STAGED = 1")]
         let staged_root = &oracles.staged()[0];
         action_root.enforce_equal(dr, staged_root)?;
@@ -422,27 +417,25 @@ impl Step<Pasta> for SpendAction {
             witness.as_ref().map(|data| Fp::from(data.1.nk)),
         )?;
         let [ak_x, ak_y] = curve::coordinates(dr, &ak)?;
-        let derived_pk = poseidon::with_driver::payment_key(dr, (&ak_x, &ak_y), &nk)?;
+        let derived_pk =
+            poseidon::with_sponge::payment_key(dr, (&ak_x, &ak_y), &nk)?.squeeze(dr)?;
         let pk = left_encoded.as_gadget().pk.clone();
         pk.enforce_equal(dr, &derived_pk).map_err(|_err| {
             ragu_core::Error::InvalidWitness("SpendAction: pak not related to note".into())
         })?;
         let cm = left_encoded.as_gadget().cm.clone();
         let theta = Element::alloc(dr, &mut (), witness.as_ref().map(|data| data.0.0))?;
-        let alpha = poseidon::with_driver::alpha_spend(dr, &theta, &cm)?;
-        let alpha_bits = circuit::bits::<D, 255>(dr, &alpha)?;
+        let alpha = poseidon::with_sponge::alpha_spend(dr, &theta, &cm)?.squeeze(dr)?;
+        let alpha_bits = circuit::Bits::<D, 255>::new(dr, &alpha)?;
         let ak_complete = curve::from_point(dr, &ak)?;
-        let scaled = curve::fixed_base::unsigned::walk(
-            dr,
-            &curve::fixed_base::unsigned::G_TABLE,
-            &alpha_bits,
-        )?;
+        let scaled = curve::fixed_base::unsigned::G_TABLE.walk(dr, &alpha_bits)?;
         let rk_complete = curve::add_complete(dr, &ak_complete, &scaled)?;
         let rk = curve::finish(dr, &rk_complete)?;
         let cv = left_encoded.as_gadget().cv.clone();
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
         let [rk_x, rk_y] = curve::coordinates(dr, &rk)?;
-        let action_root = poseidon::with_driver::action_digest(dr, (&cv_x, &cv_y), (&rk_x, &rk_y))?;
+        let action_root = poseidon::with_sponge::action_digest(dr, (&cv_x, &cv_y), (&rk_x, &rk_y))?
+            .squeeze(dr)?;
         #[expect(clippy::indexing_slicing, reason = "framework enforces NUM_STAGED = 1")]
         let staged_root = &oracles.staged()[0];
         action_root.enforce_equal(dr, staged_root)?;
@@ -825,9 +818,9 @@ pub struct FeeFuse;
 
 lazy_static! {
     // s = MAX_MONEY - maximum, so the corrected walk computes [-maximum]V.
-    static ref FEE_V_TABLE: curve::fixed_base::unsigned::Table<17> = curve::fixed_base::unsigned::table(
-        *value::VALUE_COMMIT_V,
-        -*value::VALUE_COMMIT_V * Fq::from(MAX_MONEY)
+    static ref FEE_V_TABLE: curve::fixed_base::unsigned::Table<17> = curve::fixed_base::unsigned::Table::new(
+        *orchard::VALUE_COMMIT_V,
+        -*orchard::VALUE_COMMIT_V * Fq::from(MAX_MONEY)
     );
 }
 
@@ -905,14 +898,14 @@ impl Step<Pasta> for FeeFuse {
         // The three 51-bit slacks f, c and s sum identically to MAX_MONEY.
         // Their integer sum is below p, excluding field wraparound and proving
         // 0 <= fee <= maximum <= MAX_MONEY.
-        circuit::bits::<D, 51>(dr, &fee)?;
+        circuit::Bits::<D, 51>::new(dr, &fee)?;
         let change = maximum.sub(dr, &fee);
-        circuit::bits::<D, 51>(dr, &change).map_err(|_err| {
+        circuit::Bits::<D, 51>::new(dr, &change).map_err(|_err| {
             ragu_core::Error::InvalidWitness("FeeFuse: change is out of range".into())
         })?;
         let bound = Element::constant(dr, Fp::from(MAX_MONEY));
         let slack = bound.sub(dr, &maximum);
-        let slack_bits = circuit::bits::<D, 51>(dr, &slack).map_err(|_err| {
+        let slack_bits = circuit::Bits::<D, 51>::new(dr, &slack).map_err(|_err| {
             ragu_core::Error::InvalidWitness("FeeFuse: maximum fee exceeds MAX_MONEY".into())
         })?;
         let pk = Element::alloc(
@@ -930,23 +923,21 @@ impl Step<Pasta> for FeeFuse {
             &mut (),
             witness.as_ref().map(|data| Fp::from(data.0.rcm)),
         )?;
-        let blind = poseidon::with_driver::feemax_blind(dr, &pk, &psi, &rcm)?;
+        let blind = poseidon::with_sponge::feemax_blind(dr, &pk, &psi, &rcm)?.squeeze(dr)?;
         #[expect(clippy::indexing_slicing, reason = "framework enforces NUM_STAGED = 5")]
         for (index, actual) in [&pk, &psi, &rcm, &maximum, &fee].into_iter().enumerate() {
             actual.enforce_equal(dr, &oracles.staged()[index])?;
         }
-        let blind_bits = circuit::bits::<D, 255>(dr, &blind)?;
-        let blind_point = curve::fixed_base::unsigned::walk(
-            dr,
-            &curve::fixed_base::unsigned::R_TABLE,
-            &blind_bits,
-        )?;
-        let value_point = curve::fixed_base::unsigned::walk(dr, &FEE_V_TABLE, &slack_bits)?;
+        let blind_bits = circuit::Bits::<D, 255>::new(dr, &blind)?;
+        let blind_point = curve::fixed_base::unsigned::R_TABLE.walk(dr, &blind_bits)?;
+        let value_point = FEE_V_TABLE.walk(dr, &slack_bits)?;
         let sum = curve::add_complete(dr, &blind_point, &value_point)?;
         let cv = curve::finish(dr, &sum)?;
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
-        let fee_digest = poseidon::with_driver::fee_digest(dr, (&cv_x, &cv_y), &fee)?;
-        let fee_change = poseidon::with_driver::note_commitment(dr, &rcm, &pk, &change, &psi)?;
+        let fee_digest =
+            poseidon::with_sponge::fee_digest(dr, (&cv_x, &cv_y), &fee)?.squeeze(dr)?;
+        let fee_change =
+            poseidon::with_sponge::note_commitment(dr, &rcm, &pk, &change, &psi)?.squeeze(dr)?;
         // A zero root leaves the set polynomial factor `(X - tg)` trivial.
         fee_change.clone().enforce_nonzero(dr).map_err(|_err| {
             ragu_core::Error::InvalidWitness("FeeFuse: fee change note commitment is zero".into())
@@ -1067,22 +1058,20 @@ impl Step<Pasta> for FeeSeed {
             &mut (),
             witness.as_ref().map(|data| Fp::from(data.0.rcm)),
         )?;
-        let blind = poseidon::with_driver::feemax_blind(dr, &pk, &psi, &rcm)?;
+        let blind = poseidon::with_sponge::feemax_blind(dr, &pk, &psi, &rcm)?.squeeze(dr)?;
         #[expect(clippy::indexing_slicing, reason = "framework enforces NUM_STAGED = 3")]
         for (index, actual) in [&pk, &psi, &rcm].into_iter().enumerate() {
             actual.enforce_equal(dr, &oracles.staged()[index])?;
         }
-        let blind_bits = circuit::bits::<D, 255>(dr, &blind)?;
-        let scaled = curve::fixed_base::unsigned::walk(
-            dr,
-            &curve::fixed_base::unsigned::R_TABLE,
-            &blind_bits,
-        )?;
+        let blind_bits = circuit::Bits::<D, 255>::new(dr, &blind)?;
+        let scaled = curve::fixed_base::unsigned::R_TABLE.walk(dr, &blind_bits)?;
         let cv = curve::finish(dr, &scaled)?;
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
         let zero = Element::constant(dr, Fp::ZERO);
-        let fee_digest = poseidon::with_driver::fee_digest(dr, (&cv_x, &cv_y), &zero)?;
-        let fee_change = poseidon::with_driver::note_commitment(dr, &rcm, &pk, &zero, &psi)?;
+        let fee_digest =
+            poseidon::with_sponge::fee_digest(dr, (&cv_x, &cv_y), &zero)?.squeeze(dr)?;
+        let fee_change =
+            poseidon::with_sponge::note_commitment(dr, &rcm, &pk, &zero, &psi)?.squeeze(dr)?;
         // A zero root leaves the set polynomial factor `(X - tg)` trivial.
         fee_change.clone().enforce_nonzero(dr).map_err(|_err| {
             ragu_core::Error::InvalidWitness("FeeSeed: fee change note commitment is zero".into())

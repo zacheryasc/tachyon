@@ -39,9 +39,9 @@ use udon::curve::Affine as _;
 
 use crate::{
     constants::EPOCH_MAX,
+    gadgets::arithmetic::Bits,
     pasta,
     primitives::{TachygramSetBridge, TachygramSetCommit},
-    relations::arithmetic::bounded,
 };
 
 /// Step admission checks for the stamp's epoch and nonempty tachygram set.
@@ -66,7 +66,7 @@ fn enforce_stamp_domain<'dr, D: Driver<'dr, F = pasta::Fp>>(
         .element()
         .enforce_zero(dr)
         .map_err(|_err| ragu_core::Error::InvalidWitness("invalid anchor step".into()))?;
-    bounded::<D, 32>(dr, epoch, u64::from(EPOCH_MAX))?;
+    Bits::<D, 32>::bounded(dr, epoch, u64::from(EPOCH_MAX))?;
     Ok(())
 }
 

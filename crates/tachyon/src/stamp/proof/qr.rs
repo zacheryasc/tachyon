@@ -46,15 +46,13 @@ use crate::{
     collections::qr::QUADRATIC_NON_RESIDUE,
     constants::EPOCH_MAX,
     digest::poseidon,
+    gadgets::arithmetic as circuit,
     pasta::{EpAffine, Fp},
     primitives::{
         Anchor, EpochIndex, NfSeqPoly, QrClassRoot, QrDiscriminant, QrInterpolantPoly, QrProfile,
         QrQuotientPoly, Tachygram, TachygramSetBridge, TachygramSetPoly,
     },
-    relations::{
-        arithmetic as circuit,
-        enforce::{enforce_poly_equal, enforce_poly_product, indexed_member_factor},
-    },
+    relations::enforce::{enforce_poly_equal, enforce_poly_product, indexed_member_factor},
 };
 
 /// Tachygrams under routing, complete for `profile` over the covered span.
@@ -392,12 +390,13 @@ impl Step<Pasta> for QrStampIntakeSeed {
             Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.1)))?;
         enforce_poly_equal(dr, oracles, Slot::output(0), Slot::output(1))?;
         super::enforce_stamp_domain(dr, &epoch_element, oracles.bridge_hash())?;
-        let anchor = poseidon::with_driver::anchor_next_stamp(
+        let anchor = poseidon::with_sponge::anchor_next_stamp(
             dr,
             &previous,
             &epoch_element,
             oracles.bridge_hash(),
-        )?;
+        )?
+        .squeeze(dr)?;
         let output = D::try_just(|| {
             let (anchor_prev, epoch, discriminant, _) = witness.take();
             let () = left.take();
@@ -492,7 +491,7 @@ impl Step<Pasta> for QrEmptyIntakeSeed {
             Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.2)))?;
         let epoch_element =
             Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.1)))?;
-        circuit::bounded::<D, 32>(dr, &epoch_element, u64::from(EPOCH_MAX))?;
+        circuit::Bits::<D, 32>::bounded(dr, &epoch_element, u64::from(EPOCH_MAX))?;
         let output = D::try_just(|| {
             let (anchor, epoch, discriminant) = witness.take();
             let () = left.take();
@@ -979,7 +978,7 @@ impl Step<Pasta> for QrSideDescend {
         }
         let depth_element = left_encoded.as_gadget().depth.clone();
         let profile_bits = left_encoded.as_gadget().bits.clone();
-        circuit::bounded::<D, 5>(dr, &depth_element, 31).map_err(|_err| {
+        circuit::Bits::<D, 5>::bounded(dr, &depth_element, 31).map_err(|_err| {
             ragu_core::Error::InvalidWitness(
                 "QrSideDescend: profile has no bit left for another side".into(),
             )
@@ -1233,20 +1232,26 @@ impl Step<Pasta> for QrBucketSeal {
         let left_encoded = Encoded::<D, Self::Left, HEADER_SIZE>::new(dr, &mut (), left.clone())?;
         let right_encoded = Encoded::<D, Self::Right, HEADER_SIZE>::new(dr, &mut (), right)?;
         let epoch_element = left_encoded.as_gadget().epoch.clone();
-        let next = circuit::epoch_next(dr, &epoch_element).map_err(|_err| {
-            ragu_core::Error::InvalidWitness("QrBucketSeal: crossing past the final epoch".into())
-        })?;
+        let next = circuit::EpochIndex::new(dr, &epoch_element)
+            .and_then(|checked| checked.next(dr))
+            .map_err(|_err| {
+                ragu_core::Error::InvalidWitness(
+                    "QrBucketSeal: crossing past the final epoch".into(),
+                )
+            })?
+            .into_element();
         let previous = Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.0)))?;
         let start = left_encoded.as_gadget().anchor_prev.clone();
         let end = left_encoded.as_gadget().anchor_end.clone();
-        let boundary = poseidon::with_driver::anchor_next_epoch(dr, &previous, &epoch_element)?;
+        let boundary =
+            poseidon::with_sponge::anchor_next_epoch(dr, &previous, &epoch_element)?.squeeze(dr)?;
         start.enforce_equal(dr, &boundary).map_err(|_err| {
             ragu_core::Error::InvalidWitness(
                 "QrBucketSeal: witnessed boundary digest does not match intake's first anchor"
                     .into(),
             )
         })?;
-        let crossing = poseidon::with_driver::anchor_next_epoch(dr, &end, &next)?;
+        let crossing = poseidon::with_sponge::anchor_next_epoch(dr, &end, &next)?.squeeze(dr)?;
         let output = D::try_just(|| {
             let (epoch, anchor_prev, _, discriminant, profile) = left.take();
             let [hash_x, hash_y] = oracles
@@ -1512,9 +1517,12 @@ impl Step<Pasta> for QrUnspentInit {
             witness.as_ref().map(|data| data.2),
         )?;
         let epoch_element = left_encoded.as_gadget().epoch.clone();
-        let epoch_next = circuit::epoch_next(dr, &epoch_element).map_err(|_err| {
-            ragu_core::Error::InvalidWitness("QrUnspentInit: bucket has no next epoch".into())
-        })?;
+        let epoch_next = circuit::EpochIndex::new(dr, &epoch_element)
+            .and_then(|checked| checked.next(dr))
+            .map_err(|_err| {
+                ragu_core::Error::InvalidWitness("QrUnspentInit: bucket has no next epoch".into())
+            })?
+            .into_element();
         #[expect(
             clippy::indexing_slicing,
             reason = "the framework enforces NUM_STAGED = 1"
@@ -1540,12 +1548,17 @@ impl Step<Pasta> for QrUnspentInit {
             ragu_core::Error::InvalidWitness("QrUnspentInit: found nullifier in the bucket".into())
         })?;
 
+        let next_value = D::try_just(|| {
+            EpochIndex::try_from(*epoch_next.value().take()).map_err(|_err| {
+                ragu_core::Error::InvalidWitness("range-checked epoch conversion failed".into())
+            })
+        })?;
         let output = D::just(|| {
             let (bucket_epoch, bucket_anchor_start, bucket_anchor_next, ..) = left.take();
             (
                 bucket_anchor_start,
                 bucket_epoch,
-                circuit::epoch_value(&epoch_next).take(),
+                next_value.take(),
                 bucket_anchor_next,
             )
         });

@@ -1,4 +1,6 @@
-//! Protocol-wide non-hash constants.
+//! Protocol-wide constants.
+
+pub(crate) mod orchard;
 
 /// Maximum representable value in zatoshis (§5.3 of the protocol spec).
 pub const MAX_MONEY: u64 = 2_100_000_000_000_000;

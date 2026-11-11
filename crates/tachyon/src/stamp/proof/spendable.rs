@@ -28,10 +28,10 @@ use udon::field::Field as _;
 use super::{delegation::NoteNullifiers, pool::NoteUnspent, qr::QrBucket};
 use crate::{
     digest::poseidon,
+    gadgets::arithmetic as circuit,
     note,
     pasta::Fp,
     primitives::{Anchor, EpochIndex, TachygramSetPoly},
-    relations::arithmetic as circuit,
 };
 
 /// Wallet's spendable position, certified up to this point in every
@@ -153,7 +153,8 @@ impl Step<Pasta> for SpendableInit {
         // consensus membership of the eventual spend anchor binds the rest
         // (see the step doc).
         let anchor =
-            poseidon::with_driver::anchor_next_stamp(dr, &previous, &epoch, oracles.bridge_hash())?;
+            poseidon::with_sponge::anchor_next_stamp(dr, &previous, &epoch, oracles.bridge_hash())?
+                .squeeze(dr)?;
         let x = left_encoded.as_gadget().cm.clone();
         // Inclusion: cm ∈ set ⇔ the set polynomial vanishes at cm.
         let evaluation = oracles.query(dr, Slot::output(1), &x)?;
@@ -259,9 +260,12 @@ impl Step<Pasta> for QrSpendableInit {
                 "QrSpendableInit: segment does not close where the bucket does".into(),
             )
         })?;
-        let next = circuit::epoch_next(dr, &bucket_epoch).map_err(|_err| {
-            ragu_core::Error::InvalidWitness("QrSpendableInit: bucket has no next epoch".into())
-        })?;
+        let next = circuit::EpochIndex::new(dr, &bucket_epoch)
+            .and_then(|checked| checked.next(dr))
+            .map_err(|_err| {
+                ragu_core::Error::InvalidWitness("QrSpendableInit: bucket has no next epoch".into())
+            })?
+            .into_element();
         let unspent_next = left_encoded.as_gadget().epoch_next.clone();
         // Defensive: the anchor equality already rejects a wrong epoch label.
         next.enforce_equal(dr, &unspent_next).map_err(|_err| {
@@ -275,9 +279,14 @@ impl Step<Pasta> for QrSpendableInit {
         evaluation.enforce_zero(dr).map_err(|_err| {
             ragu_core::Error::InvalidWitness("QrSpendableInit: commitment not in bucket".into())
         })?;
+        let next_value = D::try_just(|| {
+            EpochIndex::try_from(*next.value().take()).map_err(|_err| {
+                ragu_core::Error::InvalidWitness("range-checked epoch conversion failed".into())
+            })
+        })?;
         let output = D::just(|| {
             let data = left.take();
-            (data.0, circuit::epoch_value(&next).take(), data.4)
+            (data.0, next_value.take(), data.4)
         });
         let fields = NoteSpendableOutput {
             cm: left_encoded.as_gadget().cm.clone(),

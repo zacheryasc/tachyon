@@ -43,16 +43,14 @@ use super::{
 };
 use crate::{
     digest::poseidon,
+    gadgets::arithmetic as circuit,
     note::{self},
     pasta::Fp,
     primitives::{
         Anchor, AnchorSetPoly, EpochIndex, NfSeqPoly, QrClassRoot, QrProfile, Tachygram,
         TachygramSetPoly,
     },
-    relations::{
-        arithmetic as circuit,
-        enforce::{enforce_poly_product, enforce_poly_roots, indexed_member_factor},
-    },
+    relations::enforce::{enforce_poly_product, enforce_poly_roots, indexed_member_factor},
 };
 
 /// Multi-stamp / multi-epoch nf-exclusion proof over arbitrary values.
@@ -309,12 +307,13 @@ impl Step<Pasta> for AnchorSpanSeed {
         let epoch_element =
             Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.1)))?;
         super::enforce_stamp_domain(dr, &epoch_element, oracles.bridge_hash())?;
-        let anchor_element = poseidon::with_driver::anchor_next_stamp(
+        let anchor_element = poseidon::with_sponge::anchor_next_stamp(
             dr,
             &previous,
             &epoch_element,
             oracles.bridge_hash(),
-        )?;
+        )?
+        .squeeze(dr)?;
         enforce_poly_roots(
             dr,
             oracles,
@@ -618,9 +617,12 @@ impl Step<Pasta> for UnspentLift {
         let right_encoded =
             Encoded::<D, Self::Right, HEADER_SIZE>::new(dr, &mut (), right.clone())?;
         let epoch_element = right_encoded.as_gadget().epoch.clone();
-        let epoch_next = circuit::epoch_next(dr, &epoch_element).map_err(|_err| {
-            ragu_core::Error::InvalidWitness("UnspentLift: bucket has no next epoch".into())
-        })?;
+        let epoch_next = circuit::EpochIndex::new(dr, &epoch_element)
+            .and_then(|checked| checked.next(dr))
+            .map_err(|_err| {
+                ragu_core::Error::InvalidWitness("UnspentLift: bucket has no next epoch".into())
+            })?
+            .into_element();
         let unspent_epoch = left_encoded.as_gadget().epoch_next.clone();
         unspent_epoch
             .enforce_equal(dr, &epoch_element)
@@ -680,13 +682,18 @@ impl Step<Pasta> for UnspentLift {
             ragu_core::Error::InvalidWitness("UnspentLift: found nullifier in the bucket".into())
         })?;
 
+        let next_value = D::try_just(|| {
+            EpochIndex::try_from(*epoch_next.value().take()).map_err(|_err| {
+                ragu_core::Error::InvalidWitness("range-checked epoch conversion failed".into())
+            })
+        })?;
         let output = D::just(|| {
             let (unspent_anchor_start, unspent_epoch_start, ..) = left.take();
             let (_, _, bucket_anchor_next, ..) = right.take();
             (
                 unspent_anchor_start,
                 unspent_epoch_start,
-                circuit::epoch_value(&epoch_next).take(),
+                next_value.take(),
                 bucket_anchor_next,
             )
         });
@@ -796,7 +803,7 @@ impl Step<Pasta> for UnspentBind {
         let end = left_encoded.as_gadget().epoch_next.clone();
         let one = Element::constant(dr, Fp::ONE);
         let span_minus_one = end.sub(dr, &start).sub(dr, &one);
-        circuit::bits::<D, 32>(dr, &span_minus_one).map_err(|_err| {
+        circuit::Bits::<D, 32>::new(dr, &span_minus_one).map_err(|_err| {
             ragu_core::Error::InvalidWitness("UnspentBind: segment covers no epoch".into())
         })?;
         let output = D::try_just(|| {

@@ -19,9 +19,9 @@ use crate::{
     Tachygram,
     constants::MAX_MONEY,
     digest::poseidon,
+    gadgets::{arithmetic as circuit, curve},
     note::Note,
     pasta::{EpAffine, Fp, Fq},
-    relations::{arithmetic as circuit, curve},
     value,
 };
 
@@ -115,7 +115,7 @@ impl Step<Pasta> for OutputBind {
                 .as_ref()
                 .map(|data| Fp::from(u64::from(data.0.value))),
         )?;
-        let amount_bits = circuit::bounded::<D, 51>(dr, &amount, MAX_MONEY)?;
+        let amount_bits = circuit::Bits::<D, 51>::bounded(dr, &amount, MAX_MONEY)?;
         let rcm = Element::alloc(
             dr,
             &mut (),
@@ -131,20 +131,16 @@ impl Step<Pasta> for OutputBind {
             &mut (),
             witness.as_ref().map(|data| Fp::from(data.0.psi)),
         )?;
-        let cm = poseidon::with_driver::note_commitment(dr, &rcm, &pk, &amount, &psi)?;
-        let pad = poseidon::with_driver::pad_tachygram(dr, &rcm, &pk, &amount, &psi)?;
+        let cm =
+            poseidon::with_sponge::note_commitment(dr, &rcm, &pk, &amount, &psi)?.squeeze(dr)?;
+        let pad =
+            poseidon::with_sponge::pad_tachygram(dr, &rcm, &pk, &amount, &psi)?.squeeze(dr)?;
         cm.clone().enforce_nonzero(dr)?;
         pad.clone().enforce_nonzero(dr)?;
-        let rcv_bits = curve::fixed_base::unsigned::free_bits(
-            dr,
-            &witness.as_ref().map(|data| Fq::from(data.1)),
-        )?;
-        let cv = curve::fixed_base::unsigned::commitment(
-            dr,
-            &curve::fixed_base::unsigned::NEG_V_TABLE,
-            &amount_bits,
-            &rcv_bits,
-        )?;
+        let rcv_bits =
+            circuit::Bits::<D, 255>::free(dr, &witness.as_ref().map(|data| Fq::from(data.1)))?;
+        let cv =
+            curve::fixed_base::unsigned::NEG_V_TABLE.commitment(dr, &amount_bits, &rcv_bits)?;
         let output = D::just(|| {
             (
                 Tachygram::from(*cm.value().take()),

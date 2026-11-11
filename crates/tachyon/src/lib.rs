@@ -28,6 +28,7 @@ pub mod witness;
 
 mod arithmetic;
 mod collections;
+mod gadgets;
 mod primitives;
 mod relations;
 mod serialization;

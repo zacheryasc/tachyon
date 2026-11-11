@@ -1,9 +1,10 @@
 use core::array;
 
+use ragu_core::maybe::Maybe as _;
 use ragu_primitives::{Element, Simulator};
 
 use super::*;
-use crate::{constants::MAX_MONEY, relations::arithmetic};
+use crate::{constants::MAX_MONEY, gadgets::arithmetic};
 
 fn check_counts(before: (usize, usize), dr: &Simulator<Fp>, expected: (usize, usize)) {
     assert_eq!(
@@ -26,7 +27,7 @@ fn check_walk<const W: usize, const N: usize>(
         let allocated = FixedVec::<_, ConstLen<N>>::try_from_fn(|index| {
             Boolean::alloc(dr, &mut (), Simulator::<Fp>::just(|| bits[index]))
         })?;
-        let output = walk(dr, table, &allocated)?;
+        let output = table.walk(dr, &allocated)?;
         assert_eq!(output.infinity.value().take(), expected.is_identity());
         if !expected.is_identity() {
             assert_eq!(
@@ -65,20 +66,20 @@ fn doubling_bits<const N: usize>(top: u8) -> [bool; N] {
 
 #[test]
 fn walk_counts() {
-    let wide = table::<85>(*value::VALUE_COMMIT_R, Ep::identity());
-    let short = table::<17>(*value::VALUE_COMMIT_V, Ep::identity());
+    let wide = Table::<85>::new(*orchard::VALUE_COMMIT_R, Ep::identity());
+    let short = Table::<17>::new(*orchard::VALUE_COMMIT_V, Ep::identity());
     Simulator::<Fp>::simulate((), |dr, _| {
         let bits = FixedVec::<_, ConstLen<255>>::try_from_fn(|_| {
             Boolean::alloc(dr, &mut (), Simulator::<Fp>::just(|| false))
         })?;
         let mut before = (dr.num_gates(), dr.num_constraints());
-        walk(dr, &wide, &bits)?;
+        wide.walk(dr, &bits)?;
         check_counts(before, dr, (430, 860));
         let amount = FixedVec::<_, ConstLen<51>>::try_from_fn(|_| {
             Boolean::alloc(dr, &mut (), Simulator::<Fp>::just(|| true))
         })?;
         before = (dr.num_gates(), dr.num_constraints());
-        walk(dr, &short, &amount)?;
+        short.walk(dr, &amount)?;
         check_counts(before, dr, (90, 180));
         Ok(())
     })
@@ -107,21 +108,21 @@ fn walks_match_native() {
         cases.push([*window; 85].as_flattened().try_into().unwrap());
     }
     for (base, correction) in [
-        (*value::VALUE_COMMIT_R, Ep::identity()),
+        (*orchard::VALUE_COMMIT_R, Ep::identity()),
         (ACTION_AUTH_GENERATOR.to_projective(), Ep::identity()),
     ] {
-        let wide = table::<85>(base, correction);
+        let wide = Table::<85>::new(base, correction);
         for bits in &cases {
             check_walk(&wide, base, correction, *bits);
         }
     }
-    let value_base = *value::VALUE_COMMIT_V;
+    let value_base = *orchard::VALUE_COMMIT_V;
     for (base, correction) in [
         (value_base, Ep::identity()),
         (-value_base, Ep::identity()),
         (value_base, -value_base * Fq::from(MAX_MONEY)),
     ] {
-        let short = table::<17>(base, correction);
+        let short = Table::<17>::new(base, correction);
         let amounts = [0u64, 1, 2, 3, MAX_MONEY]
             .map(|amount| array::from_fn::<bool, 51, _>(|index| amount & (1 << index) != 0));
         let repeated = digits
@@ -140,16 +141,21 @@ fn top_addition_inverse_and_doubling() {
     let base = EpAffine::generator().to_projective();
     for coefficient in [0u64, 4, 5] {
         let correction = base * Fq::from(coefficient);
-        check_walk(&table::<2>(base, correction), base, correction, [false; 6]);
+        check_walk(
+            &Table::<2>::new(base, correction),
+            base,
+            correction,
+            [false; 6],
+        );
     }
 
     for top in [1, 5] {
         let bits = doubling_bits::<255>(top);
-        check_walk(&R_TABLE, *value::VALUE_COMMIT_R, Ep::identity(), bits);
+        check_walk(&R_TABLE, *orchard::VALUE_COMMIT_R, Ep::identity(), bits);
         let generator = ACTION_AUTH_GENERATOR.to_projective();
         check_walk(&G_TABLE, generator, Ep::identity(), bits);
     }
-    let value_base = *value::VALUE_COMMIT_V;
+    let value_base = *orchard::VALUE_COMMIT_V;
     check_walk(&V_TABLE, value_base, Ep::identity(), doubling_bits::<51>(1));
     check_walk(
         &NEG_V_TABLE,
@@ -161,8 +167,8 @@ fn top_addition_inverse_and_doubling() {
 
 #[test]
 fn commitment_and_digest_walks_match_native() {
-    let value_base = *value::VALUE_COMMIT_V;
-    let blind_base = *value::VALUE_COMMIT_R;
+    let value_base = *orchard::VALUE_COMMIT_V;
+    let blind_base = *orchard::VALUE_COMMIT_R;
     for (amount, blind) in [
         (0u64, Fq::ONE),
         (1, Fq::ZERO),
@@ -173,9 +179,9 @@ fn commitment_and_digest_walks_match_native() {
         Simulator::<Fp>::simulate((amount, blind), |dr, witness| {
             let element =
                 Element::alloc(dr, &mut (), witness.as_ref().map(|pair| Fp::from(pair.0)))?;
-            let amount_bits = arithmetic::bounded::<_, 51>(dr, &element, MAX_MONEY)?;
-            let bits = free_bits(dr, &witness.as_ref().map(|pair| pair.1))?;
-            let point = commitment(dr, &NEG_V_TABLE, &amount_bits, &bits)?;
+            let amount_bits = arithmetic::Bits::<_, 51>::bounded(dr, &element, MAX_MONEY)?;
+            let bits = arithmetic::Bits::<_, 255>::free(dr, &witness.as_ref().map(|pair| pair.1))?;
+            let point = NEG_V_TABLE.commitment(dr, &amount_bits, &bits)?;
             assert_eq!(point.value().take().to_projective(), expected);
             Ok(())
         })
@@ -183,9 +189,9 @@ fn commitment_and_digest_walks_match_native() {
     }
     let identity = Simulator::<Fp>::simulate(Fq::ZERO, |dr, witness| {
         let zero = Element::zero(dr);
-        let amount_bits = arithmetic::bounded::<_, 51>(dr, &zero, MAX_MONEY)?;
-        let bits = free_bits(dr, &witness)?;
-        commitment(dr, &NEG_V_TABLE, &amount_bits, &bits)?;
+        let amount_bits = arithmetic::Bits::<_, 51>::bounded(dr, &zero, MAX_MONEY)?;
+        let bits = arithmetic::Bits::<_, 255>::free(dr, &witness)?;
+        NEG_V_TABLE.commitment(dr, &amount_bits, &bits)?;
         Ok(())
     });
     assert!(identity.is_err());
@@ -195,8 +201,8 @@ fn commitment_and_digest_walks_match_native() {
         let expected = generator * Fq::from_bytes(digest.to_bytes()).unwrap();
         Simulator::<Fp>::simulate(digest, |dr, witness| {
             let element = Element::alloc(dr, &mut (), witness)?;
-            let bits = arithmetic::bits::<_, 255>(dr, &element)?;
-            let output = walk(dr, &G_TABLE, &bits)?;
+            let bits = arithmetic::Bits::<_, 255>::new(dr, &element)?;
+            let output = G_TABLE.walk(dr, &bits)?;
             assert_eq!(output.infinity.value().take(), expected.is_identity());
             if !expected.is_identity() {
                 assert_eq!(
