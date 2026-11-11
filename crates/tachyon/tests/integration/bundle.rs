@@ -820,10 +820,9 @@ fn read_rejects_noncanonical_tachygrams() {
 fn verify_tachygrams_rejects_an_oversized_union() {
     let bundle = shared_autonome();
     let rng = &mut StdRng::seed_from_u64(0);
-    let pairs = iter::repeat_with(|| {
-        TachygramPair::from([Tachygram::random(rng), Tachygram::random(rng)])
-    })
-    .take(ProductionRank::num_coeffs().div_ceil(2));
+    let pairs =
+        iter::repeat_with(|| TachygramPair::from([Tachygram::random(rng), Tachygram::random(rng)]))
+            .take(ProductionRank::num_coeffs().div_ceil(2));
     assert_matches!(
         bundle.verify_tachygrams(pairs, []),
         Err(VerifyTachygramsError::TooManyTachygrams)
