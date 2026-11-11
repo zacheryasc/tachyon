@@ -71,9 +71,12 @@ const FEE_BLIND_DOMAIN: &[u8; 16] = b"Tachyon-FeeBlind";
 /// \mathsf{rcm})$.
 #[must_use]
 pub fn feemax_blind(pk: Fp, psi: Fp, rcm: Fp) -> Fp {
-    hash([pk, psi, rcm], |dr, [key, trapdoor, blind]| {
-        with_sponge::feemax_blind(dr, key, trapdoor, blind)
-    })
+    hash(
+        [pk, psi, rcm],
+        |dr, [pk_element, psi_element, rcm_element]| {
+            with_sponge::feemax_blind(dr, pk_element, psi_element, rcm_element)
+        },
+    )
 }
 
 const FEE_DIGEST_DOMAIN: &[u8; 16] = b"Tachyon-FeeDg\0\0\0";
@@ -93,8 +96,8 @@ pub fn fee_digest(cv_feemax: EpAffine, fee: u64) -> Fp {
         .expect("cv_feemax must not be the identity");
     hash(
         [x, y, Fp::from(fee)],
-        |dr, [horizontal, vertical, amount]| {
-            with_sponge::fee_digest(dr, (horizontal, vertical), amount)
+        |dr, [x_element, y_element, fee_element]| {
+            with_sponge::fee_digest(dr, (x_element, y_element), fee_element)
         },
     )
 }
@@ -114,17 +117,11 @@ pub fn action_digest(cv: EpAffine, rk: EpAffine) -> Fp {
     let (rk_x, rk_y) = rk.coordinates().expect("rk must not be the identity");
     hash(
         [cv_x, cv_y, rk_x, rk_y],
-        |dr,
-         [
-            commit_horizontal,
-            commit_vertical,
-            auth_horizontal,
-            auth_vertical,
-        ]| {
+        |dr, [cv_x_element, cv_y_element, rk_x_element, rk_y_element]| {
             with_sponge::action_digest(
                 dr,
-                (commit_horizontal, commit_vertical),
-                (auth_horizontal, auth_vertical),
+                (cv_x_element, cv_y_element),
+                (rk_x_element, rk_y_element),
             )
         },
     )
@@ -144,8 +141,8 @@ pub fn payment_key(ak: EpAffine, nk: Fp) -> Fp {
         reason = "ak = [ask]G for a PRF-derived ask is not the identity"
     )]
     let (x, y) = ak.coordinates().expect("ak must not be the identity");
-    hash([x, y, nk], |dr, [horizontal, vertical, key]| {
-        with_sponge::payment_key(dr, (horizontal, vertical), key)
+    hash([x, y, nk], |dr, [x_element, y_element, nk_element]| {
+        with_sponge::payment_key(dr, (x_element, y_element), nk_element)
     })
 }
 
@@ -156,8 +153,8 @@ const NOTE_COMMITMENT_DOMAIN: &[u8; 16] = b"Tachyon-CmDerive";
 pub fn note_commitment(rcm: Fp, pk: Fp, value: u64, psi: Fp) -> Fp {
     hash(
         [rcm, pk, Fp::from(value), psi],
-        |dr, [blind, key, amount, trapdoor]| {
-            with_sponge::note_commitment(dr, blind, key, amount, trapdoor)
+        |dr, [rcm_element, pk_element, value_element, psi_element]| {
+            with_sponge::note_commitment(dr, rcm_element, pk_element, value_element, psi_element)
         },
     )
 }
@@ -174,8 +171,8 @@ const PAD_COMMITMENT_DOMAIN: &[u8; 16] = b"Tachyon-CmOutPad";
 pub fn pad_tachygram(rcm: Fp, pk: Fp, value: u64, psi: Fp) -> Fp {
     hash(
         [rcm, pk, Fp::from(value), psi],
-        |dr, [blind, key, amount, trapdoor]| {
-            with_sponge::pad_tachygram(dr, blind, key, amount, trapdoor)
+        |dr, [rcm_element, pk_element, value_element, psi_element]| {
+            with_sponge::pad_tachygram(dr, rcm_element, pk_element, value_element, psi_element)
         },
     )
 }
@@ -191,8 +188,8 @@ const NULLIFIER_MASTER_DOMAIN: &[u8; 16] = b"Tachyon-NfMaster";
 /// $$
 #[must_use]
 pub fn nf_master(psi: Fp, nk: Fp) -> Fp {
-    hash([psi, nk], |dr, [trapdoor, key]| {
-        with_sponge::nf_master(dr, trapdoor, key)
+    hash([psi, nk], |dr, [psi_element, nk_element]| {
+        with_sponge::nf_master(dr, psi_element, nk_element)
     })
 }
 
@@ -205,8 +202,8 @@ const SPEND_ALPHA_DOMAIN: &[u8; 16] = b"Tachyon-Spend\0\0\0";
 /// $$
 #[must_use]
 pub fn alpha_spend(theta: Fp, cm: Fp) -> Fp {
-    hash([theta, cm], |dr, [entropy, commitment]| {
-        with_sponge::alpha_spend(dr, entropy, commitment)
+    hash([theta, cm], |dr, [theta_element, cm_element]| {
+        with_sponge::alpha_spend(dr, theta_element, cm_element)
     })
 }
 
@@ -219,8 +216,8 @@ const OUTPUT_ALPHA_DOMAIN: &[u8; 16] = b"Tachyon-Output\0\0";
 /// $$
 #[must_use]
 pub fn alpha_output(theta: Fp, cm: Fp) -> Fp {
-    hash([theta, cm], |dr, [entropy, commitment]| {
-        with_sponge::alpha_output(dr, entropy, commitment)
+    hash([theta, cm], |dr, [theta_element, cm_element]| {
+        with_sponge::alpha_output(dr, theta_element, cm_element)
     })
 }
 
@@ -235,9 +232,12 @@ const NULLIFIER_DOMAIN: &[u8; 16] = b"Tachyon-NfDerive";
 /// native and the element count is fixed at `RATE`, so this is unreachable.
 #[must_use]
 pub fn nullifier_group(mk: Fp, epoch_start: Fp) -> [Fp; PoseidonFp::RATE] {
-    let (mut emulator, mut sponge) = native_sponge([mk, epoch_start], |dr, [master, start]| {
-        with_sponge::nullifier_group(dr, master, start)
-    });
+    let (mut emulator, mut sponge) = native_sponge(
+        [mk, epoch_start],
+        |dr, [mk_element, epoch_start_element]| {
+            with_sponge::nullifier_group(dr, mk_element, epoch_start_element)
+        },
+    );
     array::from_fn(|_| squeeze(&mut emulator, &mut sponge))
 }
 
@@ -257,12 +257,12 @@ pub fn anchor_next_stamp(anchor_prev: Fp, epoch: Fp, stamp_hash: EpAffine) -> Fp
         .expect("bridge hash must not be the identity point");
     hash(
         [anchor_prev, epoch, x, y],
-        |dr, [previous, index, horizontal, vertical]| {
+        |dr, [anchor_prev_element, epoch_element, x_element, y_element]| {
             with_sponge::anchor_next_stamp(
                 dr,
-                previous,
-                index,
-                &[horizontal.clone(), vertical.clone()],
+                anchor_prev_element,
+                epoch_element,
+                &[x_element.clone(), y_element.clone()],
             )
         },
     )
@@ -302,15 +302,25 @@ pub fn evidence_tree_leaf(
             contents_x,
             contents_y,
         ],
-        |dr, [index, start, end, routing, level, profile, x, y]| {
+        |dr,
+         [
+            epoch_element,
+            anchor_start_element,
+            anchor_next_element,
+            discriminant_element,
+            depth_element,
+            bits_element,
+            contents_x_element,
+            contents_y_element,
+        ]| {
             with_sponge::evidence_tree_leaf(
                 dr,
-                index,
-                start,
-                end,
-                routing,
-                (level, profile),
-                &[x.clone(), y.clone()],
+                epoch_element,
+                anchor_start_element,
+                anchor_next_element,
+                discriminant_element,
+                (depth_element, bits_element),
+                &[contents_x_element.clone(), contents_y_element.clone()],
             )
         },
     )
@@ -325,8 +335,8 @@ pub fn evidence_tree_leaf(
 /// $$
 #[must_use]
 pub fn evidence_tree_node(children: [Fp; EVIDENCE_TREE_ARITY]) -> Fp {
-    hash(children, |dr, elements| {
-        with_sponge::evidence_tree_node(dr, &elements.map(Clone::clone))
+    hash(children, |dr, children_elements| {
+        with_sponge::evidence_tree_node(dr, &children_elements.map(Clone::clone))
     })
 }
 
@@ -338,9 +348,12 @@ const ANCHOR_EPOCH_DOMAIN: &[u8; 16] = b"Tachyon-AnchorEp";
 /// anchor of the epoch before.
 #[must_use]
 pub fn anchor_next_epoch(anchor_prev: Fp, epoch: Fp) -> Fp {
-    hash([anchor_prev, epoch], |dr, [previous, index]| {
-        with_sponge::anchor_next_epoch(dr, previous, index)
-    })
+    hash(
+        [anchor_prev, epoch],
+        |dr, [anchor_prev_element, epoch_element]| {
+            with_sponge::anchor_next_epoch(dr, anchor_prev_element, epoch_element)
+        },
+    )
 }
 
 /// Builds domain-tagged sponges and absorbs protocol inputs.

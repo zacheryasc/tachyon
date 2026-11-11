@@ -53,8 +53,7 @@ use super::{
 
 lazy_static! {
     pub(crate) static ref R_TABLE: Table<85> = Table::new(*orchard::VALUE_COMMIT_R, Ep::identity());
-    pub(crate) static ref G_TABLE: Table<85> =
-        Table::new(*ACTION_AUTH_GENERATOR, Ep::identity());
+    pub(crate) static ref G_TABLE: Table<85> = Table::new(*ACTION_AUTH_GENERATOR, Ep::identity());
     pub(crate) static ref V_TABLE: Table<17> = Table::new(*orchard::VALUE_COMMIT_V, Ep::identity());
     pub(crate) static ref NEG_V_TABLE: Table<17> =
         Table::new(-*orchard::VALUE_COMMIT_V, Ep::identity());
