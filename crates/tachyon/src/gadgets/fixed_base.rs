@@ -5,20 +5,20 @@
 //! $[k_{W-1} 8^{W-1} - \sum_{i < W-1} 2 \cdot 8^i]B + C$, so the walk computes
 //! $[\sum_i k_i 8^i]B + C$ for the binary value of the bits. Ragu has no
 //! lookups, so halo2's Lagrange interpolation becomes a two-gate selection
-//! precomputed per window (see [`Window`]), allocated as a [`Point`].
+//! precomputed per window (see [`Window`]).
 //!
-//! Every addition is [`Point::add_incomplete`] in one [`NonzeroBank`] scope,
-//! which constrains each x difference nonzero. Each window's digit is selected
-//! exactly from Boolean bits, so for every assignment, free bits included, the
-//! interior prefix satisfies $0 < A_j \le 9(8^j - 1)/7 < 2 \cdot 8^j \le D_j$
-//! and $A_j + D_j \le 9(8^{j+1} - 1)/7 < q$ for $j \le 83$: no interior
-//! addition meets equal or inverse operands, so those checks never reject.
+//! [`Walk`] constrains its running sum's coordinates directly. Each window's
+//! digit is selected exactly from Boolean bits, so for every assignment, free
+//! bits included, the interior prefix satisfies
+//! $0 < A_j \le 9(8^j - 1)/7 < 2 \cdot 8^j \le D_j$ and
+//! $A_j + D_j \le 9(8^{j+1} - 1)/7 < q$ for $j \le 83$: no interior addition
+//! meets equal or inverse operands, so its slope gate alone fixes the slope.
 //! No such bound covers the top addition or a join with a variable point, and
-//! there the check rejects. A walk is therefore unsatisfiable when its result
-//! would be the identity (e.g. $k \equiv 0$ on a zero correction) or when the
-//! prefix equals the top entry, a doubling. A value walk joins onto the blind
-//! point $P$ before its top entry, so $v = 0$ yields $P$ rather than an
-//! identity intermediate.
+//! there the walk constrains the x difference nonzero. A walk is therefore
+//! unsatisfiable when its result would be the identity (e.g. $k \equiv 0$ on
+//! a zero correction) or when the prefix equals the top entry, a doubling. A
+//! value walk joins onto the blind point $P$ before its top entry, so $v = 0$
+//! yields $P$ rather than an identity intermediate.
 
 use alloc::vec::Vec;
 use core::array;
@@ -27,10 +27,11 @@ use lazy_static::lazy_static;
 use ragu_core::{
     Error, Result,
     drivers::{Coeff, Driver, DriverValue},
+    gadgets::Gadget,
     maybe::Maybe as _,
 };
 use ragu_primitives::{
-    Boolean, Element, GadgetExt as _, NonzeroBank, Point, multiadd, multipack,
+    Boolean, Element, GadgetExt as _, multiadd, multipack,
     vec::{ConstLen, FixedVec},
 };
 use udon::{
@@ -40,8 +41,7 @@ use udon::{
 
 use crate::{
     constants::orchard::{self, ACTION_AUTH_GENERATOR},
-    gadgets::coordinates,
-    pasta::{Ep, EpAffine, Fp, Fq},
+    pasta::{Ep, Fp, Fq},
 };
 
 lazy_static! {
@@ -164,13 +164,12 @@ impl Window {
         window
     }
 
-    /// Selects the entry in two gates and allocates it as a [`Point`] equal to
-    /// the selected coordinates.
+    /// Selects the entry's coordinates in two gates.
     fn select<'dr, D: Driver<'dr, F = Fp>>(
         &self,
         dr: &mut D,
         bits: [&Boolean<'dr, D>; 3],
-    ) -> Result<Point<'dr, D, EpAffine>> {
+    ) -> Result<[Element<'dr, D>; 2]> {
         let [low, middle, high] = bits.map(Boolean::element);
         let left = multiadd(dr, &[low.clone(), middle.clone(), high.clone()], &self.left);
         let right = multiadd(
@@ -186,19 +185,59 @@ impl Window {
         );
         let cubic = high.mul(dr, &inner)?;
         let basis = [Element::one(), low, middle, high, quadratic, cubic];
-        let x = multiadd(dr, &basis, &self.x);
-        let y = multiadd(dr, &basis, &self.y);
-        let point = Point::alloc(
-            dr,
-            D::try_just(|| {
-                EpAffine::from_xy(*x.value().take(), *y.value().take())
-                    .ok_or_else(|| Error::InvalidWitness("selected entry is off the curve".into()))
-            })?,
-        )?;
-        let [point_x, point_y] = coordinates(dr, &point)?;
-        x.enforce_equal(dr, &point_x)?;
-        y.enforce_equal(dr, &point_y)?;
-        Ok(point)
+        Ok([multiadd(dr, &basis, &self.x), multiadd(dr, &basis, &self.y)])
+    }
+}
+
+/// The affine coordinates of a walk's running sum.
+#[derive(Gadget)]
+struct Walk<'dr, D: Driver<'dr>> {
+    x: Element<'dr, D>,
+    y: Element<'dr, D>,
+}
+
+impl<'dr, D: Driver<'dr, F = Fp>> Walk<'dr, D> {
+    /// Adds a selected interior entry in three gates. The offset bound leaves
+    /// the entry's x distinct from the sum's on every Boolean assignment, so
+    /// the slope gate alone fixes the slope.
+    fn add_interior(&self, dr: &mut D, [x, y]: [&Element<'dr, D>; 2]) -> Result<Self> {
+        let rise = y.sub(dr, &self.y);
+        let run = x.sub(dr, &self.x);
+        let slope_value = D::try_just(|| {
+            Ok(*rise.value().take()
+                * run.value().take().invert().ok_or_else(|| {
+                    Error::InvalidWitness("interior walk entry shares the sum's x".into())
+                })?)
+        })?;
+        let (slope, run_wire, rise_wire) = dr.mul(|| {
+            Ok((
+                Coeff::Arbitrary(*slope_value.snag()),
+                Coeff::Arbitrary(*run.value().take()),
+                Coeff::Arbitrary(*rise.value().take()),
+            ))
+        })?;
+        dr.enforce_equal(&run_wire, run.wire())?;
+        dr.enforce_equal(&rise_wire, rise.wire())?;
+        self.add_with_slope(dr, &Element::promote(slope, slope_value), x)
+    }
+
+    /// Adds a point in four gates, constraining its x distinct from the sum's.
+    fn add_checked(&self, dr: &mut D, [x, y]: [&Element<'dr, D>; 2]) -> Result<Self> {
+        let run = x.sub(dr, &self.x).enforce_nonzero(dr)?;
+        let slope = y.sub(dr, &self.y).divide(dr, &run)?;
+        self.add_with_slope(dr, &slope, x)
+    }
+
+    fn add_with_slope(
+        &self,
+        dr: &mut D,
+        slope: &Element<'dr, D>,
+        x: &Element<'dr, D>,
+    ) -> Result<Self> {
+        let sum_x = slope.square(dr)?.sub(dr, &self.x).sub(dr, x);
+        let difference = self.x.sub(dr, &sum_x);
+        let sum_y = slope.mul(dr, &difference)?.sub(dr, &self.y);
+        Ok(Self { x: sum_x, y: sum_y })
     }
 }
 
@@ -246,44 +285,45 @@ impl<const W: usize> Table<W> {
     fn prefix_and_top<'dr, D: Driver<'dr, F = Fp>, const N: usize>(
         &self,
         dr: &mut D,
-        bank: &mut NonzeroBank<'dr, D>,
         bits: &FixedVec<Boolean<'dr, D>, ConstLen<N>>,
-    ) -> Result<(Point<'dr, D, EpAffine>, Point<'dr, D, EpAffine>)> {
+    ) -> Result<(Walk<'dr, D>, [Element<'dr, D>; 2])> {
         const {
             assert!(W > 1 && W <= 85, "the offset bound covers W=2..85");
             assert!(N == 3 * W, "the bit width must match the fixed-base table");
         }
         let window = |index: usize| [&bits[3 * index], &bits[3 * index + 1], &bits[3 * index + 2]];
-        let mut accumulator = self.low[0].select(dr, window(0))?;
+        let [x, y] = self.low[0].select(dr, window(0))?;
+        let mut prefix = Walk { x, y };
         for index in 1..W - 1 {
-            let digit = self.low[index].select(dr, window(index))?;
-            accumulator = accumulator.add_incomplete(dr, &digit, bank)?;
+            let entry = self.low[index].select(dr, window(index))?;
+            prefix = prefix.add_interior(dr, entry.each_ref())?;
         }
         let top = self.top.select(dr, window(W - 1))?;
-        Ok((accumulator, top))
+        Ok((prefix, top))
     }
 
-    /// $\[k\]B + C + P$ for the binary value $k$ of `bits`, joining `onto`
-    /// ($P$, when present) between the prefix and the top entry.
+    /// The coordinates of $\[k\]B + C + P$ for the binary value $k$ of
+    /// `bits`, joining `onto` ($P$, when present) between the prefix and the
+    /// top entry.
     fn walk<'dr, D: Driver<'dr, F = Fp>, const N: usize>(
         &self,
         dr: &mut D,
         bits: &FixedVec<Boolean<'dr, D>, ConstLen<N>>,
-        onto: Option<&Point<'dr, D, EpAffine>>,
-    ) -> Result<Point<'dr, D, EpAffine>> {
-        NonzeroBank::scope(dr, |driver, bank| {
-            let (mut accumulator, top) = self.prefix_and_top(driver, bank, bits)?;
-            if let Some(start) = onto {
-                accumulator = accumulator.add_incomplete(driver, start, bank)?;
-            }
-            accumulator.add_incomplete(driver, &top, bank)
-        })
+        onto: Option<&[Element<'dr, D>; 2]>,
+    ) -> Result<[Element<'dr, D>; 2]> {
+        let (mut sum, top) = self.prefix_and_top(dr, bits)?;
+        if let Some(point) = onto {
+            sum = sum.add_checked(dr, point.each_ref())?;
+        }
+        let Walk { x, y } = sum.add_checked(dr, top.each_ref())?;
+        Ok([x, y])
     }
 }
 
 impl Table<85> {
-    /// $\[h\]B + P$ for the canonical value of a digest $h$. The 255 bits are
-    /// compared against $p - 1$, so $h$ and $h + p$ cannot both decode.
+    /// The coordinates of $\[h\]B + P$ for the canonical value of a digest
+    /// $h$. The 255 bits are compared against $p - 1$, so $h$ and $h + p$
+    /// cannot both decode.
     #[expect(
         clippy::indexing_slicing,
         reason = "multipack splits 255 bits into a 254-bit and a 1-bit chunk"
@@ -292,8 +332,8 @@ impl Table<85> {
         &self,
         dr: &mut D,
         digest: &Element<'dr, D>,
-        onto: Option<&Point<'dr, D, EpAffine>>,
-    ) -> Result<Point<'dr, D, EpAffine>> {
+        onto: Option<&[Element<'dr, D>; 2]>,
+    ) -> Result<[Element<'dr, D>; 2]> {
         let bits = FixedVec::<_, ConstLen<255>>::try_from_fn(|index| {
             Boolean::alloc(
                 dr,
@@ -310,14 +350,14 @@ impl Table<85> {
         self.walk(dr, &bits, onto)
     }
 
-    /// $\[k\]B$ for some $k$ whose 255 free bits nothing recomposes: $r$ or
-    /// $r + q$, for a blind nothing else binds.
+    /// The coordinates of $\[k\]B$ for some $k$ whose 255 free bits nothing
+    /// recomposes: $r$ or $r + q$, for a blind nothing else binds.
     #[expect(clippy::indexing_slicing, reason = "native fixed field representation")]
     pub(crate) fn mul_free<'dr, D: Driver<'dr, F = Fp>>(
         &self,
         dr: &mut D,
         scalar: &DriverValue<D, Fq>,
-    ) -> Result<Point<'dr, D, EpAffine>> {
+    ) -> Result<[Element<'dr, D>; 2]> {
         let bits = FixedVec::<_, ConstLen<255>>::try_from_fn(|index| {
             Boolean::alloc(
                 dr,
@@ -363,9 +403,10 @@ impl Table<85> {
 }
 
 impl Table<17> {
-    /// $\[v\]B + C + P$ for $v$ decomposed into 51 bits, which doubles as the
-    /// range check $v < 2^{51}$. As in Orchard's short path, $v$ is a magnitude
-    /// and a sign; Tachyon's sign is constant per step and lives in the base.
+    /// The coordinates of $\[v\]B + C + P$ for $v$ decomposed into 51 bits,
+    /// which doubles as the range check $v < 2^{51}$. As in Orchard's short
+    /// path, $v$ is a magnitude and a sign; Tachyon's sign is constant per
+    /// step and lives in the base.
     #[expect(
         clippy::indexing_slicing,
         reason = "multipack packs 51 bits into one chunk"
@@ -374,8 +415,8 @@ impl Table<17> {
         &self,
         dr: &mut D,
         value: &Element<'dr, D>,
-        onto: &Point<'dr, D, EpAffine>,
-    ) -> Result<Point<'dr, D, EpAffine>> {
+        onto: &[Element<'dr, D>; 2],
+    ) -> Result<[Element<'dr, D>; 2]> {
         let bits = FixedVec::<_, ConstLen<51>>::try_from_fn(|index| {
             Boolean::alloc(
                 dr,

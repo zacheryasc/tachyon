@@ -20,15 +20,12 @@ fn alloc_bits<'dr, const N: usize>(
     })
 }
 
-fn walk<const W: usize, const N: usize>(table: &Table<W>, bits: [bool; N]) -> Result<Ep> {
-    let mut output = Ep::identity();
+fn walk<const W: usize, const N: usize>(table: &Table<W>, bits: [bool; N]) -> Result<(Fp, Fp)> {
+    let mut output = (Fp::ZERO, Fp::ZERO);
     Simulator::<Fp>::simulate((), |dr, _| {
         let allocated = alloc_bits(dr, bits)?;
-        output = table
-            .walk(dr, &allocated, None)?
-            .value()
-            .take()
-            .to_projective();
+        let [x, y] = table.walk(dr, &allocated, None)?;
+        output = (*x.value().take(), *y.value().take());
         Ok(())
     })?;
     Ok(output)
@@ -56,7 +53,7 @@ fn walks_compute_the_binary_value() {
             if expected.is_identity() {
                 assert!(output.is_err());
             } else {
-                assert_eq!(output.unwrap(), expected);
+                assert_eq!(output.unwrap(), expected.to_affine().coordinates().unwrap());
             }
         }
     }
@@ -78,14 +75,14 @@ fn walks_compute_the_binary_value() {
             if expected.is_identity() {
                 assert!(output.is_err());
             } else {
-                assert_eq!(output.unwrap(), expected);
+                assert_eq!(output.unwrap(), expected.to_affine().coordinates().unwrap());
             }
         }
     }
 }
 
-/// The bank discharges every x difference through one inverse, so a zero
-/// difference leaves no satisfying assignment, whatever inverse is chosen.
+/// A checked addition discharges its x difference through an inverse, so a
+/// zero difference leaves no satisfying assignment, whatever inverse is chosen.
 #[test]
 fn exceptional_additions_have_no_satisfying_inverse() {
     // Zero digits make the prefix and top entry inverses. Low digits reading
@@ -101,12 +98,8 @@ fn exceptional_additions_have_no_satisfying_inverse() {
         for bits in [[false; 255], doubling_bits] {
             Simulator::<Fp>::simulate((), |dr, _| {
                 let allocated = alloc_bits(dr, bits)?;
-                let (prefix, top) = NonzeroBank::scope(dr, |driver, bank| {
-                    table.prefix_and_top(driver, bank, &allocated)
-                })?;
-                let [prefix_x, _] = coordinates(dr, &prefix)?;
-                let [top_x, _] = coordinates(dr, &top)?;
-                let difference = top_x.sub(dr, &prefix_x);
+                let (prefix, [top_x, _]) = table.prefix_and_top(dr, &allocated)?;
+                let difference = top_x.sub(dr, &prefix.x);
                 assert_eq!(*difference.value().take(), Fp::ZERO);
                 for advice in [Fp::ZERO, Fp::ONE, -Fp::ONE, Fp::from(7)] {
                     let rejection = difference
@@ -127,16 +120,15 @@ fn exceptional_additions_have_no_satisfying_inverse() {
     // ± that point meets the join at equal x.
     let value_prefix = (0..16).fold(Fq::ZERO, |acc, _| acc * Fq::from(8) + Fq::from(2));
     for sign in [Fq::ONE, -Fq::ONE] {
-        let blind = (*orchard::VALUE_COMMIT_V * (value_prefix * sign)).to_affine();
+        let (blind_x, _) = (*orchard::VALUE_COMMIT_V * (value_prefix * sign))
+            .to_affine()
+            .coordinates()
+            .unwrap();
         Simulator::<Fp>::simulate((), |dr, _| {
             let allocated = alloc_bits(dr, [false; 51])?;
-            let start = Point::alloc(dr, Simulator::<Fp>::just(|| blind))?;
-            let (prefix, _) = NonzeroBank::scope(dr, |driver, bank| {
-                V_TABLE.prefix_and_top(driver, bank, &allocated)
-            })?;
-            let [prefix_x, _] = coordinates(dr, &prefix)?;
-            let [start_x, _] = coordinates(dr, &start)?;
-            let difference = start_x.sub(dr, &prefix_x);
+            let start_x = Element::constant(dr, blind_x);
+            let (prefix, _) = V_TABLE.prefix_and_top(dr, &allocated)?;
+            let difference = start_x.sub(dr, &prefix.x);
             assert_eq!(*difference.value().take(), Fp::ZERO);
             for advice in [Fp::ZERO, Fp::ONE, -Fp::ONE, Fp::from(7)] {
                 let rejection = difference
@@ -164,10 +156,13 @@ fn value_commitments_accept_zero_and_reject_wide_values() {
         let result = Simulator::<Fp>::simulate((amount, blind), |dr, witness| {
             let value = Element::alloc(dr, &mut (), witness.as_ref().map(|pair| pair.0))?;
             let blind_point = R_TABLE.mul_free(dr, &witness.as_ref().map(|pair| pair.1))?;
-            let cv = NEG_V_TABLE.mul_bounded(dr, &value, &blind_point)?;
+            let [cv_x, cv_y] = NEG_V_TABLE.mul_bounded(dr, &value, &blind_point)?;
             let expected = *orchard::VALUE_COMMIT_R * blind
                 - *orchard::VALUE_COMMIT_V * scalar(&amount.to_le_bits().as_ref()[..51]);
-            assert_eq!(cv.value().take().to_projective(), expected);
+            assert_eq!(
+                (*cv_x.value().take(), *cv_y.value().take()),
+                expected.to_affine().coordinates().unwrap()
+            );
             Ok(())
         });
         assert_eq!(result.is_ok(), valid);
@@ -183,9 +178,12 @@ fn fee_commitment_accepts_a_zero_maximum() {
             let digest = Element::constant(dr, Fp::from(11));
             let slack = Element::constant(dr, Fp::from(MAX_MONEY - maximum));
             let blind_point = R_TABLE.mul_canonical(dr, &digest, None)?;
-            let cv = fee_table.mul_bounded(dr, &slack, &blind_point)?;
+            let [cv_x, cv_y] = fee_table.mul_bounded(dr, &slack, &blind_point)?;
             let expected = *orchard::VALUE_COMMIT_R * Fq::from(11) - value_base * Fq::from(maximum);
-            assert_eq!(cv.value().take().to_projective(), expected);
+            assert_eq!(
+                (*cv_x.value().take(), *cv_y.value().take()),
+                expected.to_affine().coordinates().unwrap()
+            );
             Ok(())
         })
         .unwrap();
@@ -195,14 +193,18 @@ fn fee_commitment_accepts_a_zero_maximum() {
 #[test]
 fn digest_walks_use_the_canonical_value() {
     let ak = *ACTION_AUTH_GENERATOR * Fq::from(5);
+    let (ak_x, ak_y) = ak.to_affine().coordinates().unwrap();
     for digest in [Fp::ONE, -Fp::ONE, Fp::from(2).pow_u64(254)] {
         Simulator::<Fp>::simulate(digest, |dr, witness| {
             let element = Element::alloc(dr, &mut (), witness)?;
-            let start = Point::alloc(dr, Simulator::<Fp>::just(|| ak.to_affine()))?;
-            let rk = G_TABLE.mul_canonical(dr, &element, Some(&start))?;
+            let start = [Element::constant(dr, ak_x), Element::constant(dr, ak_y)];
+            let [rk_x, rk_y] = G_TABLE.mul_canonical(dr, &element, Some(&start))?;
             let expected =
                 *ACTION_AUTH_GENERATOR * scalar(&digest.to_le_bits().as_ref()[..255]) + ak;
-            assert_eq!(rk.value().take().to_projective(), expected);
+            assert_eq!(
+                (*rk_x.value().take(), *rk_y.value().take()),
+                expected.to_affine().coordinates().unwrap()
+            );
             Ok(())
         })
         .unwrap();

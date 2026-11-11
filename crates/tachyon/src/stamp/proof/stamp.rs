@@ -279,10 +279,8 @@ impl Step<Pasta> for OutputAction {
         let pad_root = left_encoded.as_gadget().pad.clone();
         let theta = Element::alloc(dr, &mut (), witness.as_ref().map(|data| data.0.0))?;
         let alpha = poseidon::with_sponge::alpha_output(dr, &theta, &cm_root)?.squeeze(dr)?;
-        let rk = fixed_base::G_TABLE.mul_canonical(dr, &alpha, None)?;
-        let [rk_x, rk_y] = gadgets::coordinates(dr, &rk)?;
-        let cv = left_encoded.as_gadget().cv.clone();
-        let [cv_x, cv_y] = gadgets::coordinates(dr, &cv)?;
+        let [rk_x, rk_y] = fixed_base::G_TABLE.mul_canonical(dr, &alpha, None)?;
+        let [cv_x, cv_y] = left_encoded.as_gadget().cv.clone();
         let action_root = poseidon::with_sponge::action_digest(dr, (&cv_x, &cv_y), (&rk_x, &rk_y))?
             .squeeze(dr)?;
         #[expect(clippy::indexing_slicing, reason = "framework enforces NUM_STAGED = 1")]
@@ -431,10 +429,8 @@ impl Step<Pasta> for SpendAction {
         let cm = left_encoded.as_gadget().cm.clone();
         let theta = Element::alloc(dr, &mut (), witness.as_ref().map(|data| data.0.0))?;
         let alpha = poseidon::with_sponge::alpha_spend(dr, &theta, &cm)?.squeeze(dr)?;
-        let rk = fixed_base::G_TABLE.mul_canonical(dr, &alpha, Some(&ak))?;
-        let [rk_x, rk_y] = gadgets::coordinates(dr, &rk)?;
-        let cv = left_encoded.as_gadget().cv.clone();
-        let [cv_x, cv_y] = gadgets::coordinates(dr, &cv)?;
+        let [rk_x, rk_y] = fixed_base::G_TABLE.mul_canonical(dr, &alpha, Some(&[ak_x, ak_y]))?;
+        let [cv_x, cv_y] = left_encoded.as_gadget().cv.clone();
         let action_root = poseidon::with_sponge::action_digest(dr, (&cv_x, &cv_y), (&rk_x, &rk_y))?
             .squeeze(dr)?;
         #[expect(clippy::indexing_slicing, reason = "framework enforces NUM_STAGED = 1")]
@@ -941,12 +937,11 @@ impl Step<Pasta> for FeeFuse {
             actual.enforce_equal(dr, &oracles.staged()[index])?;
         }
         let blind_point = fixed_base::R_TABLE.mul_canonical(dr, &blind, None)?;
-        let cv = FEE_V_TABLE
+        let [cv_x, cv_y] = FEE_V_TABLE
             .mul_bounded(dr, &slack, &blind_point)
             .map_err(|_err| {
                 ragu_core::Error::InvalidWitness("FeeFuse: maximum fee exceeds MAX_MONEY".into())
             })?;
-        let [cv_x, cv_y] = gadgets::coordinates(dr, &cv)?;
         let fee_digest =
             poseidon::with_sponge::fee_digest(dr, (&cv_x, &cv_y), &fee)?.squeeze(dr)?;
         let fee_change =
@@ -1076,8 +1071,7 @@ impl Step<Pasta> for FeeSeed {
         for (index, actual) in [&pk, &psi, &rcm].into_iter().enumerate() {
             actual.enforce_equal(dr, &oracles.staged()[index])?;
         }
-        let cv = fixed_base::R_TABLE.mul_canonical(dr, &blind, None)?;
-        let [cv_x, cv_y] = gadgets::coordinates(dr, &cv)?;
+        let [cv_x, cv_y] = fixed_base::R_TABLE.mul_canonical(dr, &blind, None)?;
         let zero = Element::constant(dr, Fp::ZERO);
         let fee_digest =
             poseidon::with_sponge::fee_digest(dr, (&cv_x, &cv_y), &zero)?.squeeze(dr)?;

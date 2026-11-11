@@ -13,13 +13,13 @@ use ragu_core::{
     pasta::Pasta,
 };
 use ragu_primitives::{
-    Boolean, Element, GadgetExt as _, Point,
+    Boolean, Element, GadgetExt as _,
     allocator::Allocator,
     io::Write,
     multipack,
     vec::{ConstLen, FixedVec},
 };
-use udon::{curve::EndomorphismAffine, field::Field as _};
+use udon::{curve::Affine as _, field::Field as _};
 
 use super::{delegation::NoteSecret, spendable::NoteSpendable};
 use crate::{
@@ -46,13 +46,13 @@ use crate::{
 pub struct SpendHeader;
 
 #[derive(Gadget, Write)]
-pub struct SpendHeaderOutput<'dr, D: Driver<'dr>, C: EndomorphismAffine<Base = D::F>> {
+pub struct SpendHeaderOutput<'dr, D: Driver<'dr>> {
     pub cm: Element<'dr, D>,
     pub nf_current: Element<'dr, D>,
     pub nf_next: Element<'dr, D>,
     pub anchor: Element<'dr, D>,
     pub pk: Element<'dr, D>,
-    pub cv: Point<'dr, D, C>,
+    pub cv: [Element<'dr, D>; 2],
 }
 
 impl Header<Fp> for SpendHeader {
@@ -65,7 +65,7 @@ impl Header<Fp> for SpendHeader {
         PaymentKey,
         value::Commitment,
     );
-    type Output = Kind![Fp; SpendHeaderOutput<'_, _, EpAffine>];
+    type Output = Kind![Fp; SpendHeaderOutput<'_, _>];
 
     const SUFFIX: Suffix = Suffix::new(5);
 
@@ -74,6 +74,11 @@ impl Header<Fp> for SpendHeader {
         allocator: &mut A,
         witness: DriverValue<D, Self::Data>,
     ) -> ragu_core::Result<Bound<'dr, D, Self::Output>> {
+        let cv = D::try_just(|| {
+            EpAffine::from(witness.as_ref().take().5)
+                .coordinates()
+                .ok_or_else(|| ragu_core::Error::InvalidWitness("cv is the identity".into()))
+        })?;
         Ok(SpendHeaderOutput {
             cm: Element::alloc(
                 dr,
@@ -100,7 +105,10 @@ impl Header<Fp> for SpendHeader {
                 allocator,
                 witness.as_ref().map(|fields| Fp::from(fields.4)),
             )?,
-            cv: Point::alloc(dr, witness.as_ref().map(|fields| EpAffine::from(fields.5)))?,
+            cv: [
+                Element::alloc(dr, allocator, cv.as_ref().map(|coordinates| coordinates.0))?,
+                Element::alloc(dr, allocator, cv.as_ref().map(|coordinates| coordinates.1))?,
+            ],
         })
     }
 }
@@ -237,18 +245,22 @@ impl Step<Pasta> for SpendBind {
         let blind_point =
             fixed_base::R_TABLE.mul_free(dr, &witness.as_ref().map(|data| Fq::from(data.0)))?;
         let cv = fixed_base::V_TABLE.mul_bounded(dr, &value, &blind_point)?;
-        let output = D::just(|| {
+        let [cv_x, cv_y] = cv.each_ref().map(Element::value);
+        let output = D::try_just(|| {
             let (spendable_cm, _, anchor) = left.take();
             let (_, note, _) = right.take();
-            (
+            let commitment = EpAffine::from_xy(*cv_x.take(), *cv_y.take()).ok_or_else(|| {
+                ragu_core::Error::InvalidWitness("SpendBind: cv is not on the curve".into())
+            })?;
+            Ok((
                 spendable_cm,
                 Nullifier::from(*nf_current.value().take()),
                 Nullifier::from(*nf_next.value().take()),
                 anchor,
                 note.pk,
-                value::Commitment::from(cv.value().take()),
-            )
-        });
+                value::Commitment::from(commitment),
+            ))
+        })?;
         let fields = SpendHeaderOutput {
             cm,
             nf_current,
