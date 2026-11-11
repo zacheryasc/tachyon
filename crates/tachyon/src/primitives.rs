@@ -24,4 +24,4 @@ pub use sets::{
     ActionSetCommit, ActionSetPoly, AnchorSetCommit, AnchorSetPoly, TachygramSetBridge,
     TachygramSetCommit, TachygramSetPoly,
 };
-pub use tachygram::Tachygram;
+pub use tachygram::{Tachygram, TachygramPair};

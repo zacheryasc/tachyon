@@ -84,13 +84,13 @@ const FEE_DIGEST_DOMAIN: &[u8; 16] = b"Tachyon-FeeDg\0\0\0";
 
 /// A fee digest, $d_\mathsf{fee} = \mathsf{Poseidon}_\texttt{Tachyon-FeeDg}(
 /// x(\mathsf{cv}_\mathsf{feemax}), y(\mathsf{cv}_\mathsf{feemax}),
-/// \mathsf{fee})$.
+/// \mathsf{fee}, \mathsf{cm}_\mathsf{chg})$.
 ///
 /// # Panics
 ///
 /// Panics if `cv_feemax` is the identity.
 #[must_use]
-pub fn fee_digest(cv_feemax: EpAffine, fee: u64) -> Fp {
+pub fn fee_digest(cv_feemax: EpAffine, fee: u64, fee_change: crate::Tachygram) -> Fp {
     #[expect(clippy::expect_used, reason = "callers reject the identity")]
     let (x, y) = cv_feemax
         .coordinates()
@@ -99,7 +99,13 @@ pub fn fee_digest(cv_feemax: EpAffine, fee: u64) -> Fp {
         let x_element = Element::constant(driver, x);
         let y_element = Element::constant(driver, y);
         let fee_element = Element::constant(driver, Fp::from(fee));
-        with_driver::fee_digest(driver, (&x_element, &y_element), &fee_element)
+        let fee_change_element = Element::constant(driver, Fp::from(fee_change));
+        with_driver::fee_digest(
+            driver,
+            (&x_element, &y_element),
+            &fee_element,
+            &fee_change_element,
+        )
     })
     .value()
     .take()
@@ -107,7 +113,7 @@ pub fn fee_digest(cv_feemax: EpAffine, fee: u64) -> Fp {
 
 const ACTION_DIGEST_DOMAIN: &[u8; 16] = b"Tachyon-ActionDg";
 
-/// Derives an action digest from action fields.
+/// Derives an action digest from `cv`, `rk`, the pair's sum and product.
 ///
 /// # Panics
 ///
@@ -117,7 +123,7 @@ const ACTION_DIGEST_DOMAIN: &[u8; 16] = b"Tachyon-ActionDg";
     clippy::similar_names,
     reason = "x and y coordinate elements of each point"
 )]
-pub fn action_digest(cv: EpAffine, rk: EpAffine) -> Fp {
+pub fn action_digest(cv: EpAffine, rk: EpAffine, tachygrams: [crate::Tachygram; 2]) -> Fp {
     #[expect(clippy::expect_used, reason = "callers reject the identity")]
     let (cv_x, cv_y) = cv.coordinates().expect("cv must not be the identity");
     #[expect(clippy::expect_used, reason = "callers reject the identity")]
@@ -127,10 +133,12 @@ pub fn action_digest(cv: EpAffine, rk: EpAffine) -> Fp {
         let cv_y_element = Element::constant(driver, cv_y);
         let rk_x_element = Element::constant(driver, rk_x);
         let rk_y_element = Element::constant(driver, rk_y);
+        let tachygram_elements = tachygrams.map(|tg| Element::constant(driver, Fp::from(tg)));
         with_driver::action_digest(
             driver,
             (&cv_x_element, &cv_y_element),
             (&rk_x_element, &rk_y_element),
+            [&tachygram_elements[0], &tachygram_elements[1]],
         )
     })
     .value()
@@ -418,16 +426,25 @@ pub(crate) mod with_driver {
         dr: &mut D,
         cv: (&Element<'dr, D>, &Element<'dr, D>),
         fee: &Element<'dr, D>,
+        fee_change: &Element<'dr, D>,
     ) -> Result<Element<'dr, D>> {
-        tagged_sponge(dr, FEE_DIGEST_DOMAIN, [cv.0, cv.1, fee])?.squeeze(dr)
+        tagged_sponge(dr, FEE_DIGEST_DOMAIN, [cv.0, cv.1, fee, fee_change])?.squeeze(dr)
     }
 
     pub(crate) fn action_digest<'dr, D: Driver<'dr, F = Fp>>(
         dr: &mut D,
         cv: (&Element<'dr, D>, &Element<'dr, D>),
         rk: (&Element<'dr, D>, &Element<'dr, D>),
+        tachygrams: [&Element<'dr, D>; 2],
     ) -> Result<Element<'dr, D>> {
-        tagged_sponge(dr, ACTION_DIGEST_DOMAIN, [cv.0, cv.1, rk.0, rk.1])?.squeeze(dr)
+        let sum = tachygrams[0].add(dr, tachygrams[1]);
+        let product = tachygrams[0].mul(dr, tachygrams[1])?;
+        tagged_sponge(
+            dr,
+            ACTION_DIGEST_DOMAIN,
+            [cv.0, cv.1, rk.0, rk.1, &sum, &product],
+        )?
+        .squeeze(dr)
     }
 
     pub(crate) fn payment_key<'dr, D: Driver<'dr, F = Fp>>(

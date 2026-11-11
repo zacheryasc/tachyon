@@ -27,7 +27,7 @@ use crate::{
     keys::{ProofAuthorizingKey, private},
     note::{self, Note},
     pasta::{EpAffine, Fp, Fq},
-    primitives::{ActionDigest, Anchor, TachygramSetBridge, TachygramSetCommit, effect},
+    primitives::{ActionDigest, Anchor, Tachygram, TachygramSetBridge, TachygramSetCommit, effect},
     relations::{
         arithmetic as circuit, curve,
         enforce::{enforce_poly_equal, enforce_poly_product, enforce_poly_roots},
@@ -198,7 +198,7 @@ impl Stamp {
 /// `theta` is free, but `alpha` is its hash with the certified `cm`, so an
 /// `rk` planned over one note matches another only through a preimage.
 ///
-/// Two permutations (`alpha`, the action digest) and one scalar
+/// Three permutations (`alpha`, two for the action digest) and one scalar
 /// multiplication (`rk`); opens the action-set and tachygram-set polynomials.
 #[derive(Debug)]
 pub struct OutputAction;
@@ -220,12 +220,12 @@ impl Step<Pasta> for OutputAction {
         left: HeaderInput<'_, Fp, Self::Left>,
         _: HeaderInput<'_, Fp, Self::Right>,
     ) -> ragu_core::Result<Vec<Fp>> {
-        let (cm, _, cv) = *left.data;
+        let (cm, pad, cv) = *left.data;
         let alpha = witness
             .0
             .randomizer::<effect::Output>(note::Commitment::from(Fp::from(cm)));
         let rk = private::ActionSigningKey::new(&alpha).derive_action_public();
-        let digest = ActionDigest::new(cv, rk).map_err(|_err| {
+        let digest = ActionDigest::new(cv, rk, [cm, pad].into()).map_err(|_err| {
             ragu_core::Error::InvalidWitness(
                 "OutputAction: action digest construction failed".into(),
             )
@@ -282,7 +282,12 @@ impl Step<Pasta> for OutputAction {
         let cv = left_encoded.as_gadget().cv.clone();
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
         let [rk_x, rk_y] = curve::coordinates(dr, &rk)?;
-        let action_root = poseidon::with_driver::action_digest(dr, (&cv_x, &cv_y), (&rk_x, &rk_y))?;
+        let action_root = poseidon::with_driver::action_digest(
+            dr,
+            (&cv_x, &cv_y),
+            (&rk_x, &rk_y),
+            [&cm_root, &pad_root],
+        )?;
         #[expect(clippy::indexing_slicing, reason = "framework enforces NUM_STAGED = 1")]
         let staged_root = &oracles.staged()[0];
         action_root.enforce_equal(dr, staged_root)?;
@@ -334,7 +339,7 @@ impl Step<Pasta> for OutputAction {
 /// `theta` is free, but `alpha` is its hash with the certified `cm`, so an
 /// `rk` planned over one note matches another only through a preimage.
 ///
-/// Three permutations (`pk`, `alpha`, the action digest) and one scalar
+/// Four permutations (`pk`, `alpha`, two for the action digest) and one scalar
 /// multiplication (`rk`); opens the action-set and tachygram-set
 /// polynomials.
 #[derive(Debug)]
@@ -362,10 +367,15 @@ impl Step<Pasta> for SpendAction {
         left: HeaderInput<'_, Fp, Self::Left>,
         _: HeaderInput<'_, Fp, Self::Right>,
     ) -> ragu_core::Result<Vec<Fp>> {
-        let (cm, _, _, _, _, cv) = *left.data;
+        let (cm, nf_current, nf_next, _, _, cv) = *left.data;
         let alpha = witness.0.randomizer::<effect::Spend>(cm);
         let rk = witness.1.ak.derive_action_public(&alpha);
-        let digest = ActionDigest::new(cv, rk).map_err(|_err| {
+        let digest = ActionDigest::new(
+            cv,
+            rk,
+            [Tachygram::from(nf_current), Tachygram::from(nf_next)].into(),
+        )
+        .map_err(|_err| {
             ragu_core::Error::InvalidWitness(
                 "SpendAction: action digest construction failed".into(),
             )
@@ -438,7 +448,14 @@ impl Step<Pasta> for SpendAction {
         let cv = left_encoded.as_gadget().cv.clone();
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
         let [rk_x, rk_y] = curve::coordinates(dr, &rk)?;
-        let action_root = poseidon::with_driver::action_digest(dr, (&cv_x, &cv_y), (&rk_x, &rk_y))?;
+        let current_root = left_encoded.as_gadget().nf_current.clone();
+        let next_root = left_encoded.as_gadget().nf_next.clone();
+        let action_root = poseidon::with_driver::action_digest(
+            dr,
+            (&cv_x, &cv_y),
+            (&rk_x, &rk_y),
+            [&current_root, &next_root],
+        )?;
         #[expect(clippy::indexing_slicing, reason = "framework enforces NUM_STAGED = 1")]
         let staged_root = &oracles.staged()[0];
         action_root.enforce_equal(dr, staged_root)?;
@@ -451,8 +468,6 @@ impl Step<Pasta> for SpendAction {
             &[action_root],
             "SpendAction: action set does not commit to the action",
         )?;
-        let current_root = left_encoded.as_gadget().nf_current.clone();
-        let next_root = left_encoded.as_gadget().nf_next.clone();
         // The stamp accumulator commits to exactly the nullifier pair on the
         // bind header, both roots fixed by the recursive verification of the
         // left PCD.
@@ -811,6 +826,8 @@ impl Step<Pasta> for ActionLift {
 ///
 /// Opens both input and output sets. The fee note and fee are fixed before
 /// the challenge.
+/// Three permutations (fee blind, change commitment, fee digest) and two
+/// fixed-base scalar walks.
 #[derive(Debug)]
 pub struct FeeFuse;
 
@@ -936,8 +953,8 @@ impl Step<Pasta> for FeeFuse {
         let sum = curve::add_complete(dr, &blind_point, &value_point)?;
         let cv = curve::finish(dr, &sum)?;
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
-        let fee_digest = poseidon::with_driver::fee_digest(dr, (&cv_x, &cv_y), &fee)?;
         let fee_change = poseidon::with_driver::note_commitment(dr, &rcm, &pk, &change, &psi)?;
+        let fee_digest = poseidon::with_driver::fee_digest(dr, (&cv_x, &cv_y), &fee, &fee_change)?;
         // A zero root leaves the set polynomial factor `(X - tg)` trivial.
         fee_change.clone().enforce_nonzero(dr).map_err(|_err| {
             ragu_core::Error::InvalidWitness("FeeFuse: fee change note commitment is zero".into())
@@ -971,6 +988,8 @@ impl Step<Pasta> for FeeFuse {
 /// Proves a zero-action bundle's zero fee.
 ///
 /// Opens both singleton sets. The fee note is fixed before the challenge.
+/// Three permutations (fee blind, change commitment, fee digest) and one
+/// fixed-base scalar walk.
 #[derive(Debug)]
 pub struct FeeSeed;
 
@@ -1072,8 +1091,8 @@ impl Step<Pasta> for FeeSeed {
         let cv = curve::finish(dr, &scaled)?;
         let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
         let zero = Element::constant(dr, Fp::ZERO);
-        let fee_digest = poseidon::with_driver::fee_digest(dr, (&cv_x, &cv_y), &zero)?;
         let fee_change = poseidon::with_driver::note_commitment(dr, &rcm, &pk, &zero, &psi)?;
+        let fee_digest = poseidon::with_driver::fee_digest(dr, (&cv_x, &cv_y), &zero, &fee_change)?;
         // A zero root leaves the set polynomial factor `(X - tg)` trivial.
         fee_change.clone().enforce_nonzero(dr).map_err(|_err| {
             ragu_core::Error::InvalidWitness("FeeSeed: fee change note commitment is zero".into())
@@ -1114,19 +1133,13 @@ impl Step<Pasta> for FeeSeed {
 ///
 /// Both columns are products of linear factors, so unique factorization in
 /// $\mathbb{F}_p\[X\]$ places the divisor's digest multiset inside the
-/// dividend's. Repeated roots subtract by multiplicity. A digest determines
-/// its tachygrams at a fixed epoch. The epoch closes through consensus anchor
-/// membership: the output threads the dividend's anchor, a span folds only
-/// under the `Tachyon-AnchorSt` domain, and
-/// [`SpendableInit`](super::spendable::SpendableInit) absorbs the creation
-/// epoch. Once consensus checks the published anchor, every spend leaf beneath
-/// it derived its nullifier pair at that anchor's epoch, and the tachygram
+/// dividend's. Repeated roots subtract by multiplicity. Each action digest
+/// absorbs its tachygram pair and each fee digest its fee change. By Poseidon
+/// collision resistance a digest determines its tachygrams, and the tachygram
 /// quotient is exactly the removed leaves' tachygrams.
 ///
-/// This rests on Poseidon collision resistance, Pedersen binding, discrete
-/// log, and Poseidon preimage resistance composed through a discrete-log
-/// relation. [`NoteSeed`](super::delegation::NoteSeed) derives `pk` and
-/// [`SpendAction`] checks it, which closes that relation in-circuit.
+/// This quotient argument rests on Poseidon collision resistance and the set
+/// commitments' binding.
 ///
 /// Sub-aggregate boundaries do not bound removal. A divisor is a stamp PCD in
 /// hand, and merging in a complement first lets division remove any leaf

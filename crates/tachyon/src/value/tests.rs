@@ -10,7 +10,7 @@ use crate::{
     note::{self, Note},
     nullifier,
     pasta::Fp,
-    primitives::{ActionDigest, Anchor, effect},
+    primitives::{ActionDigest, Anchor, Tachygram, effect},
     stamp::proof::{
         new_application,
         output::OutputBind,
@@ -56,6 +56,7 @@ fn fee_fuse_rejects_maximum_above_max_money() {
     let digest = ActionDigest::new(
         cv,
         private::ActionSigningKey::new(&alpha).derive_action_public(),
+        [cm, pad].into(),
     )
     .unwrap();
     let (actions, ()) = application
@@ -98,6 +99,13 @@ fn fee_fuse_rejects_maximum_above_max_money() {
         let walk_digest = fee::Descriptor {
             cv_feemax: fee_note.derive_feemax_blind().commit(walk_value),
             v_fee: fee_witness.1,
+            change: Tachygram::from(
+                Note {
+                    value: Positive::try_from(maximum - 1).unwrap(),
+                    ..fee_note
+                }
+                .commitment(),
+            ),
         }
         .digest()
         .unwrap();

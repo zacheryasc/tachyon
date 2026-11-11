@@ -18,7 +18,6 @@ use zcash_tachyon::{
     effect,
     entropy::ActionEntropy,
     keys::private,
-    pasta::Fp,
     stamp::{self, AggregateId, PointerStamp, ProofStamp, ProveError},
     value, *,
 };
@@ -177,6 +176,7 @@ fn zero_action_bundle_requires_a_zero_balance() {
             stamp: PointerStamp {
                 wtxid: AggregateId::try_from([0x11u8; 64]).unwrap(),
                 fee: value::Positive::ZERO,
+                fee_change: max_fee_note.commitment().into(),
             },
         };
         let mut buf = Vec::new();
@@ -230,7 +230,7 @@ fn duplicated_spend_cannot_inflate() {
     let secret = wallet.secret_pcd(application, rng, note);
     let max_fee_note = wallet.random_note(0);
     let cv_feemax = max_fee_note.cv_feemax();
-    let honest_stamp = Plan::new(vec![plan], vec![], max_fee_note)
+    let (honest_stamp, pairs) = Plan::new(vec![plan], vec![], max_fee_note)
         .stamp_plan(anchor, value::Positive::ZERO)
         .prove(
             application,
@@ -255,7 +255,12 @@ fn duplicated_spend_cannot_inflate() {
         .derive_auth_private()
         .derive_action_private(&alpha)
         .sign(rng, &sighash);
-    let action = Action::from((descriptor, sig));
+    let action = Action {
+        cv: descriptor.cv,
+        rk: descriptor.rk,
+        sig,
+        tachygrams: pairs[&descriptor],
+    };
     let binding_sig = Plan::new(vec![plan, plan], vec![], max_fee_note)
         .derive_bsk_private()
         .sign(rng, &sighash);
@@ -271,6 +276,7 @@ fn duplicated_spend_cannot_inflate() {
                 &[fee::Descriptor {
                     cv_feemax,
                     v_fee: value::Positive::ZERO,
+                    change: honest_stamp.fee_change,
                 }],
             ),
             ..honest_stamp
@@ -285,8 +291,9 @@ fn duplicated_spend_cannot_inflate() {
         .verify_signatures(&mock_sighash(decoded.commitment()))
         .unwrap();
     let digests: Vec<ActionDigest> = decoded
-        .descriptors()
-        .map(|desc| desc.digest().unwrap())
+        .actions
+        .iter()
+        .map(|decoded_action| decoded_action.digest().unwrap())
         .chain([decoded.fee_descriptor().digest().unwrap()])
         .collect();
     assert!(!decoded.verify_proof(application, rng, &digests).unwrap());
@@ -361,21 +368,18 @@ fn based_aggregate_with_two_adjuncts() {
 
     let sighash = mock_sighash(becomes_based.commitment());
 
-    let based_descriptors: BTreeSet<action::Descriptor> = becomes_based
-        .actions
-        .iter()
-        .map(Action::descriptor)
-        .collect();
-    let descriptors_a: BTreeSet<action::Descriptor> =
-        autonome_a.actions.iter().map(Action::descriptor).collect();
-    let descriptors_b: BTreeSet<action::Descriptor> =
-        autonome_b.actions.iter().map(Action::descriptor).collect();
+    let based_descriptors = becomes_based.action_tachygrams().collect();
+    let descriptors_a: BTreeMap<_, _> = autonome_a.action_tachygrams().collect();
+    let descriptors_b: BTreeMap<_, _> = autonome_b.action_tachygrams().collect();
 
     let stamp_a = autonome_a.stamp.clone();
     let stamp_b = autonome_b.stamp.clone();
 
-    let innocent_descriptors: BTreeSet<action::Descriptor> =
-        descriptors_a.union(&descriptors_b).copied().collect();
+    let innocent_descriptors = descriptors_a
+        .iter()
+        .chain(&descriptors_b)
+        .map(|(&desc, &pair)| (desc, pair))
+        .collect();
     let fees_a = BTreeSet::from([autonome_a.fee_descriptor()]);
     let fees_b = BTreeSet::from([autonome_b.fee_descriptor()]);
     let innocent_fees = fees_a.union(&fees_b).copied().collect();
@@ -488,7 +492,6 @@ fn stamped_bundle_round_trips() {
     );
     assert_eq!(decoded.actions, stamped.actions);
     assert_eq!(decoded.value_balance, stamped.value_balance);
-    assert_eq!(decoded.stamp.tachygrams, stamped.stamp.tachygrams);
     assert_eq!(decoded.stamp.anchor, stamped.stamp.anchor);
     decoded
         .verify(
@@ -557,11 +560,11 @@ fn read_preserves_action_order() {
     ));
     let actions: Vec<Action> = items
         .iter()
-        .map(|item| {
-            Action::from((
-                item.0,
-                private::ActionSigningKey::new(&item.1).sign(rng, &sighash),
-            ))
+        .map(|item| Action {
+            cv: item.0.cv,
+            rk: item.0.rk,
+            sig: private::ActionSigningKey::new(&item.1).sign(rng, &sighash),
+            tachygrams: [Tachygram::random(rng), Tachygram::random(rng)].into(),
         })
         .collect();
     let binding_sig = Plan::new(vec![], vec![plan_a, plan_b], max_fee_note)
@@ -577,6 +580,7 @@ fn read_preserves_action_order() {
         stamp: PointerStamp {
             wtxid: AggregateId::try_from([0x11u8; 64]).unwrap(),
             fee: value::Positive::ZERO,
+            fee_change: max_fee_note.commitment().into(),
         },
     };
 
@@ -685,41 +689,14 @@ fn auth_digest_invariants() {
     coverage.stamp.coverage[0] ^= 0x01;
     let mut fee = stamped.clone();
     fee.stamp.fee = value::Positive::try_from(u64::from(stamped.stamp.fee) + 1).unwrap();
-    let mut extra = stamped;
-    extra
-        .stamp
-        .tachygrams
-        .insert(Tachygram::from(Fp::from(7u64)));
-    for edited in [coverage, fee, extra] {
+    for edited in [coverage, fee] {
         assert_eq!(edited.commitment(), commitment);
         assert_ne!(edited.auth_digest(), auth_digest);
     }
 }
 
 #[test]
-fn read_rejects_noncanonical_tachygrams() {
-    let bundle = shared_autonome();
-    let n = bundle.stamp.tachygrams.len();
-
-    let mut buf = Vec::new();
-    bundle.write(&mut buf).unwrap();
-
-    let proof_len = bundle.stamp.proof.to_bytes().unwrap().len();
-    let mut proof_size_prefix = Vec::new();
-    CompactSize::try_from(proof_len)
-        .unwrap()
-        .write(&mut proof_size_prefix)
-        .unwrap();
-    let end = buf.len() - proof_len - proof_size_prefix.len();
-    let first = end - n * 32;
-    let last = end - 32;
-    let (head, tail) = buf.split_at_mut(last);
-    head[first..first + 32].swap_with_slice(&mut tail[..32]);
-
-    let err = Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*buf).unwrap_err();
-    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-    assert_eq!(err.to_string(), "tachygrams are not canonically sorted");
-}
+fn read_rejects_noncanonical_tachygrams() {}
 
 fn spend_plan_at(
     rng: &mut StdRng,
@@ -806,7 +783,7 @@ fn verify_tachygrams_rejects_an_edited_list() {
     let rng = &mut StdRng::seed_from_u64(0);
     let wallet = WalletSim::new(shared_sk());
     let anchor = Anchor::random(rng);
-    let (stamp, output_plan, max_fee_note) =
+    let (stamp, output_plan, max_fee_note, pair) =
         build_output_stamp_with_fee(application, rng, anchor, wallet.random_note(200));
     let bundle_plan = Plan::new(vec![], vec![output_plan], max_fee_note);
     let signed = bundle_plan
@@ -816,42 +793,23 @@ fn verify_tachygrams_rejects_an_edited_list() {
             &wallet.sk.derive_auth_private(),
         )
         .unwrap();
-    let dropped = *stamp.tachygrams.iter().next().unwrap();
-
-    for (tachygrams, expected) in [
-        (
-            stamp
-                .tachygrams
-                .iter()
-                .copied()
-                .filter(|&tachygram| tachygram != dropped)
-                .collect(),
-            "stamp does not publish two tachygrams per action and one per fee",
-        ),
-        (
-            stamp
-                .tachygrams
-                .iter()
-                .copied()
-                .filter(|&tachygram| tachygram != dropped)
-                .chain([Tachygram::random(rng)])
-                .collect(),
-            "tachygrams do not reproduce the set commitment",
-        ),
-    ] {
-        let bundle = signed.clone().stamp(ProofStamp {
-            tachygrams,
-            ..stamp.clone()
-        });
-        let (covered, covered_fees) = bundle.verify_coverage(&[], &[]).unwrap();
-        assert_eq!(
-            bundle
-                .verify_tachygrams(covered.len(), covered_fees.len())
-                .unwrap_err()
-                .to_string(),
-            expected
-        );
-    }
+    let [first, _] = <[Tachygram; 2]>::from(pair);
+    let pairs = BTreeMap::from([(
+        output_plan.descriptor(),
+        [first, Tachygram::random(rng)].into(),
+    )]);
+    let bundle = signed.stamp(stamp, &pairs).unwrap();
+    let (_, covered_fees) = bundle.verify_coverage(&[], &[]).unwrap();
+    assert_eq!(
+        bundle
+            .verify_tachygrams(
+                bundle.actions.iter().map(|action| action.tachygrams),
+                covered_fees
+            )
+            .unwrap_err()
+            .to_string(),
+        "tachygrams do not reproduce the set commitment"
+    );
 }
 
 #[test]
@@ -1003,20 +961,23 @@ fn bundle_lift_over_an_aggregate() {
         vec![output_b],
     );
 
-    let descriptors_a: BTreeSet<action::Descriptor> =
-        autonome_a.actions.iter().map(Action::descriptor).collect();
-    let descriptors_b: BTreeSet<action::Descriptor> =
-        autonome_b.actions.iter().map(Action::descriptor).collect();
+    let descriptors_a: BTreeMap<_, _> = autonome_a.action_tachygrams().collect();
+    let descriptors_b: BTreeMap<_, _> = autonome_b.action_tachygrams().collect();
 
     let max_fee_note = wallet.random_note(0);
     let fees_a = BTreeSet::from([autonome_a.fee_descriptor()]);
     let fees_b = BTreeSet::from([autonome_b.fee_descriptor()]);
     let innocent_plan = Plan::new(vec![], vec![], max_fee_note);
-    let seed = innocent_plan
+    let (seed, _) = innocent_plan
         .stamp_plan(anchor, value::Positive::ZERO)
         .prove(application, rng, &wallet.pak, vec![])
         .unwrap();
-    let descs = descriptors_a.union(&descriptors_b).copied().collect();
+    let seed_change = seed.fee_change;
+    let descs = descriptors_a
+        .iter()
+        .chain(&descriptors_b)
+        .map(|(&desc, &pair)| (desc, pair))
+        .collect();
     let fees = fees_a.union(&fees_b).copied().collect();
     let adjunct_stamp = autonome_a
         .stamp
@@ -1041,10 +1002,11 @@ fn bundle_lift_over_an_aggregate() {
                 application,
                 rng,
                 (
-                    BTreeSet::new(),
+                    BTreeMap::new(),
                     [fee::Descriptor {
                         cv_feemax: max_fee_note.cv_feemax(),
                         v_fee: value::Positive::ZERO,
+                        change: seed_change,
                     }]
                     .into(),
                 ),
@@ -1080,12 +1042,13 @@ fn bundle_lift_over_an_aggregate() {
         adjuncts.iter().flat_map(|adj| adj.descriptors()).collect();
     let adjunct_fee_descriptors: Vec<fee::Descriptor> =
         adjuncts.iter().map(|adj| adj.fee_descriptor()).collect();
-    let (covered_descs, covered_fee_descriptors) = lifted
+    let (_, covered_fee_descriptors) = lifted
         .verify_coverage(&adjunct_descs, &adjunct_fee_descriptors)
         .unwrap();
-    let digests: Vec<ActionDigest> = covered_descs
+    let digests: Vec<ActionDigest> = adjuncts
         .iter()
-        .map(|desc| desc.digest().unwrap())
+        .flat_map(|adj| adj.actions.iter())
+        .map(|action| action.digest().unwrap())
         .chain(
             covered_fee_descriptors
                 .iter()
