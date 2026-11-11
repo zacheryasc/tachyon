@@ -235,6 +235,18 @@ impl<S: BundleState + ?Sized> Bundle<S> {
         self.actions.iter().map(Action::descriptor)
     }
 
+    /// Iterates over action descriptors and their certified tachygram pairs.
+    pub fn action_tachygrams(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (action::Descriptor, TachygramPair)>
+    where
+        S: StampState,
+    {
+        self.actions
+            .iter()
+            .map(|action| (action.descriptor(), action.tachygrams))
+    }
+
     /// The bundle's fee descriptor.
     #[must_use]
     pub fn fee_descriptor(&self) -> fee::Descriptor
@@ -699,10 +711,8 @@ impl Bundle<ProofStamp<stamp::Uncompressed>> {
         spans: Vec<ragu_pcd::Pcd<Pasta, ProductionRank, pool::AnchorSpan>>,
     ) -> Result<Self, ProveError> {
         let descriptors: BTreeMap<action::Descriptor, TachygramPair> = self
-            .actions
-            .iter()
-            .chain(adjuncts.iter().flat_map(|&adj| adj.actions.iter()))
-            .map(|action| (action.descriptor(), action.tachygrams))
+            .action_tachygrams()
+            .chain(adjuncts.iter().flat_map(|&adj| adj.action_tachygrams()))
             .collect();
         let fee_descriptors: BTreeSet<fee::Descriptor> = iter::once(self.fee_descriptor())
             .chain(adjuncts.iter().map(|&adj| adj.fee_descriptor()))
@@ -946,15 +956,6 @@ impl<P: stamp::Proof> Bundle<ProofStamp<P>> {
 }
 
 impl<S: StampState> Bundle<S> {
-    /// Iterates over action descriptors and their certified tachygram pairs.
-    pub fn action_tachygrams(
-        &self,
-    ) -> impl ExactSizeIterator<Item = (action::Descriptor, TachygramPair)> {
-        self.actions
-            .iter()
-            .map(|action| (action.descriptor(), action.tachygrams))
-    }
-
     /// Iterates over this bundle's action tachygrams and fee change.
     pub fn tachygrams(&self) -> impl Iterator<Item = Tachygram> {
         self.actions
