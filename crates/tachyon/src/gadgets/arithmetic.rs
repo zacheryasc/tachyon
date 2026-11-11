@@ -1,6 +1,5 @@
-//! Range checks and integer operations for proof steps.
+//! Range-checked epoch indices for proof steps.
 
-use derive_more::Deref;
 use ragu_core::{
     Result,
     drivers::{Driver, DriverValue},
@@ -14,53 +13,31 @@ use udon::field::Field as _;
 
 use crate::{constants::EPOCH_MAX, pasta::Fp, primitives};
 
-/// A fixed-width Boolean decomposition.
-#[derive(Deref)]
-pub(crate) struct Bits<'dr, D: Driver<'dr>, const N: usize>(FixedVec<Boolean<'dr, D>, ConstLen<N>>);
-
-impl<'dr, D: Driver<'dr, F = Fp>, const N: usize> Bits<'dr, D, N> {
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "multipack packs N bits into one chunk"
-    )]
-    pub(crate) fn new(dr: &mut D, value: &Element<'dr, D>) -> Result<Self> {
-        const {
-            assert!(
-                N > 0 && N <= 64,
-                "decomposition width must be at most 64 bits"
-            );
-        }
-        let bits = FixedVec::try_from_fn(|i| {
-            Boolean::alloc(
-                dr,
-                &mut (),
-                value
-                    .value()
-                    .map(|candidate| candidate.to_le_bits().as_ref()[i]),
-            )
-        })?;
-        multipack(dr, &bits)?[0].enforce_equal(dr, value)?;
-        Ok(Self(bits))
-    }
-
-    /// The caller supplies a public maximum below 2^N. Both the value and
-    /// `maximum - value` must fit N bits, preventing field wraparound.
-    /// Returns the checked decomposition of `value` for arithmetic consumers.
-    pub(crate) fn bounded(dr: &mut D, value: &Element<'dr, D>, maximum: u64) -> Result<Self> {
-        let value_bits = Self::new(dr, value)?;
-        let maximum_element = Element::constant(dr, Fp::from(maximum));
-        let slack = maximum_element.sub(dr, value);
-        Self::new(dr, &slack)?;
-        Ok(value_bits)
-    }
-}
-
 /// A range-checked epoch index inside a circuit.
 pub(crate) struct EpochIndex<'dr, D: Driver<'dr>>(Element<'dr, D>);
 
 impl<'dr, D: Driver<'dr, F = Fp>> EpochIndex<'dr, D> {
+    /// Both the index and `EPOCH_MAX - index` must fit 32 bits, preventing
+    /// field wraparound.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "multipack packs 32 bits into one chunk"
+    )]
     pub(crate) fn new(dr: &mut D, epoch: &Element<'dr, D>) -> Result<Self> {
-        Bits::<D, 32>::bounded(dr, epoch, u64::from(EPOCH_MAX))?;
+        let maximum = Element::constant(dr, Fp::from(u64::from(EPOCH_MAX)));
+        let slack = maximum.sub(dr, epoch);
+        for value in [epoch, &slack] {
+            let bits = FixedVec::<_, ConstLen<32>>::try_from_fn(|index| {
+                Boolean::alloc(
+                    dr,
+                    &mut (),
+                    value
+                        .value()
+                        .map(|candidate| candidate.to_le_bits().as_ref()[index]),
+                )
+            })?;
+            multipack(dr, &bits)?[0].enforce_equal(dr, value)?;
+        }
         Ok(Self(epoch.clone()))
     }
 

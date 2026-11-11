@@ -12,12 +12,18 @@ use ragu_core::{
     maybe::Maybe as _,
     pasta::Pasta,
 };
-use ragu_primitives::{Element, GadgetExt as _, Point, allocator::Allocator, io::Write};
+use ragu_primitives::{
+    Boolean, Element, GadgetExt as _, Point,
+    allocator::Allocator,
+    io::Write,
+    multipack,
+    vec::{ConstLen, FixedVec},
+};
 use udon::{curve::EndomorphismAffine, field::Field as _};
 
 use super::{delegation::NoteSecret, spendable::NoteSpendable};
 use crate::{
-    constants::{EPOCH_MAX, MAX_MONEY},
+    constants::MAX_MONEY,
     digest::poseidon,
     gadgets::{arithmetic as circuit, fixed_base},
     keys::PaymentKey,
@@ -132,7 +138,16 @@ fn derive_nullifier<'dr, D: Driver<'dr, F = Fp>>(
     master: &Element<'dr, D>,
     epoch: &Element<'dr, D>,
 ) -> ragu_core::Result<Element<'dr, D>> {
-    let bits = circuit::Bits::<D, 32>::new(dr, epoch)?;
+    let bits = FixedVec::<_, ConstLen<32>>::try_from_fn(|index| {
+        Boolean::alloc(
+            dr,
+            &mut (),
+            epoch
+                .value()
+                .map(|candidate| candidate.to_le_bits().as_ref()[index]),
+        )
+    })?;
+    multipack(dr, &bits)?[0].enforce_equal(dr, epoch)?;
     let low = &bits[0];
     let high = &bits[1];
     let twice_high = high.element().double(dr);
@@ -189,11 +204,25 @@ impl Step<Pasta> for SpendBind {
         let value = right_encoded.as_gadget().value.clone();
         let bound = Element::constant(dr, Fp::from(MAX_MONEY));
         let slack = bound.sub(dr, &value);
-        circuit::Bits::<D, 51>::new(dr, &slack)?;
+        #[expect(clippy::indexing_slicing, reason = "fixed 51-bit decomposition")]
+        let slack_bits = FixedVec::<_, ConstLen<51>>::try_from_fn(|index| {
+            Boolean::alloc(
+                dr,
+                &mut (),
+                slack
+                    .value()
+                    .map(|candidate| candidate.to_le_bits().as_ref()[index]),
+            )
+        })?;
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "multipack packs 51 bits into one chunk"
+        )]
+        multipack(dr, &slack_bits)?[0].enforce_equal(dr, &slack)?;
         let epoch = left_encoded.as_gadget().epoch_current.clone();
         let one = Element::constant(dr, Fp::ONE);
         let next = epoch.add(dr, &one);
-        circuit::Bits::<D, 32>::bounded(dr, &next, u64::from(EPOCH_MAX)).map_err(|_err| {
+        circuit::EpochIndex::new(dr, &next).map_err(|_err| {
             ragu_core::Error::InvalidWitness("SpendBind: no epoch follows the spend epoch".into())
         })?;
         let nf_current = derive_nullifier(dr, &right_encoded.as_gadget().mk, &epoch)?;

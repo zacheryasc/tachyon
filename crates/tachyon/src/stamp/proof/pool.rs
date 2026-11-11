@@ -34,7 +34,13 @@ use ragu_core::{
     maybe::Maybe as _,
     pasta::Pasta,
 };
-use ragu_primitives::{Element, GadgetExt as _, allocator::Allocator, io::Write};
+use ragu_primitives::{
+    Boolean, Element, GadgetExt as _,
+    allocator::Allocator,
+    io::Write,
+    multipack,
+    vec::{ConstLen, FixedVec},
+};
 use udon::field::Field as _;
 
 use super::{
@@ -799,9 +805,25 @@ impl Step<Pasta> for UnspentBind {
         let end = left_encoded.as_gadget().epoch_next.clone();
         let one = Element::constant(dr, Fp::ONE);
         let span_minus_one = end.sub(dr, &start).sub(dr, &one);
-        circuit::Bits::<D, 32>::new(dr, &span_minus_one).map_err(|_err| {
-            ragu_core::Error::InvalidWitness("UnspentBind: segment covers no epoch".into())
+        #[expect(clippy::indexing_slicing, reason = "fixed 32-bit decomposition")]
+        let span_bits = FixedVec::<_, ConstLen<32>>::try_from_fn(|index| {
+            Boolean::alloc(
+                dr,
+                &mut (),
+                span_minus_one
+                    .value()
+                    .map(|candidate| candidate.to_le_bits().as_ref()[index]),
+            )
         })?;
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "multipack packs 32 bits into one chunk"
+        )]
+        multipack(dr, &span_bits)?[0]
+            .enforce_equal(dr, &span_minus_one)
+            .map_err(|_err| {
+                ragu_core::Error::InvalidWitness("UnspentBind: segment covers no epoch".into())
+            })?;
         let output = D::try_just(|| {
             let (
                 unspent_anchor_start,

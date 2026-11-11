@@ -22,7 +22,13 @@ use ragu_core::{
     maybe::Maybe as _,
     pasta::{Pasta, PoseidonFp},
 };
-use ragu_primitives::{Element, GadgetExt as _, Point, allocator::Allocator, io::Write};
+use ragu_primitives::{
+    Boolean, Element, GadgetExt as _, Point,
+    allocator::Allocator,
+    io::Write,
+    multipack,
+    vec::{ConstLen, FixedVec},
+};
 use udon::{curve::Affine as _, field::Field as _};
 
 use crate::{
@@ -217,7 +223,22 @@ impl Step<Pasta> for NoteSeed {
             &mut (),
             witness.as_ref().map(|data| Fp::from(u64::from(data.0))),
         )?;
-        circuit::Bits::<D, 51>::bounded(dr, &value, MAX_MONEY)?;
+        // Both the value and MAX_MONEY - value fit 51 bits, so neither wraps.
+        let maximum = Element::constant(dr, Fp::from(MAX_MONEY));
+        let slack = maximum.sub(dr, &value);
+        #[expect(clippy::indexing_slicing, reason = "fixed 51-bit decompositions")]
+        for amount in [&value, &slack] {
+            let bits = FixedVec::<_, ConstLen<51>>::try_from_fn(|index| {
+                Boolean::alloc(
+                    dr,
+                    &mut (),
+                    amount
+                        .value()
+                        .map(|candidate| candidate.to_le_bits().as_ref()[index]),
+                )
+            })?;
+            multipack(dr, &bits)?[0].enforce_equal(dr, amount)?;
+        }
         let psi = Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.1)))?;
         let rcm = Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.2)))?;
         rcm.clone().enforce_nonzero(dr).map_err(|_err| {
@@ -351,7 +372,16 @@ impl Step<Pasta> for NullifierDerive {
         let epoch_start =
             Element::alloc(dr, &mut (), witness.as_ref().map(|data| Fp::from(data.0)))?;
         epoch_start.enforce_equal(dr, &oracles.staged()[0])?;
-        let epoch_bits = circuit::Bits::<D, 32>::new(dr, &epoch_start)?;
+        let epoch_bits = FixedVec::<_, ConstLen<32>>::try_from_fn(|index| {
+            Boolean::alloc(
+                dr,
+                &mut (),
+                epoch_start
+                    .value()
+                    .map(|candidate| candidate.to_le_bits().as_ref()[index]),
+            )
+        })?;
+        multipack(dr, &epoch_bits)?[0].enforce_equal(dr, &epoch_start)?;
         let low = &epoch_bits[0];
         let high = &epoch_bits[1];
         low.element().enforce_zero(dr).map_err(|_err| {

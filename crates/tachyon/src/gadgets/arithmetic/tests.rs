@@ -1,25 +1,6 @@
 use ragu_primitives::Simulator;
 
 use super::*;
-use crate::constants::MAX_MONEY;
-
-#[test]
-fn bounded_amount_rejects_raw_out_of_range_assignments() {
-    for (amount, valid) in [
-        (Fp::ZERO, true),
-        (Fp::from(MAX_MONEY), true),
-        (-Fp::ONE, false),
-        (Fp::from(MAX_MONEY + 1), false),
-        (Fp::from(2).pow_u64(51), false),
-    ] {
-        let result = Simulator::<Fp>::simulate(amount, |dr, assignment| {
-            let element = Element::alloc(dr, &mut (), assignment)?;
-            Bits::<_, 51>::bounded(dr, &element, MAX_MONEY)?;
-            Ok(())
-        });
-        assert_eq!(result.is_ok(), valid);
-    }
-}
 
 #[test]
 fn epoch_successor_rejects_raw_final_and_out_of_domain_assignments() {

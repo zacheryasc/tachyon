@@ -12,14 +12,20 @@ use ragu_core::{
     maybe::Maybe as _,
     pasta::Pasta,
 };
-use ragu_primitives::{Element, Point, allocator::Allocator, io::Write};
-use udon::curve::EndomorphismAffine;
+use ragu_primitives::{
+    Boolean, Element, GadgetExt as _, Point,
+    allocator::Allocator,
+    io::Write,
+    multipack,
+    vec::{ConstLen, FixedVec},
+};
+use udon::{curve::EndomorphismAffine, field::Field as _};
 
 use crate::{
     Tachygram,
     constants::MAX_MONEY,
     digest::poseidon,
-    gadgets::{arithmetic as circuit, fixed_base},
+    gadgets::fixed_base,
     note::Note,
     pasta::{EpAffine, Fp, Fq},
     value,
@@ -117,7 +123,21 @@ impl Step<Pasta> for OutputBind {
         )?;
         let bound = Element::constant(dr, Fp::from(MAX_MONEY));
         let slack = bound.sub(dr, &amount);
-        circuit::Bits::<D, 51>::new(dr, &slack)?;
+        #[expect(clippy::indexing_slicing, reason = "fixed 51-bit decomposition")]
+        let slack_bits = FixedVec::<_, ConstLen<51>>::try_from_fn(|index| {
+            Boolean::alloc(
+                dr,
+                &mut (),
+                slack
+                    .value()
+                    .map(|candidate| candidate.to_le_bits().as_ref()[index]),
+            )
+        })?;
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "multipack packs 51 bits into one chunk"
+        )]
+        multipack(dr, &slack_bits)?[0].enforce_equal(dr, &slack)?;
         let rcm = Element::alloc(
             dr,
             &mut (),
