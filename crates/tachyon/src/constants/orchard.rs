@@ -31,10 +31,11 @@ lazy_static! {
     };
 
     /// Orchard RedPallas action-authorizing generator.
-    pub(crate) static ref ACTION_AUTH_GENERATOR: EpAffine = {
+    pub(crate) static ref ACTION_AUTH_GENERATOR: Ep = {
         #[expect(clippy::expect_used, reason = "the fixed generator has a canonical encoding")]
         EpAffine::from_bytes(Point::hash_to_curve(ACTION_AUTH_DOMAIN)(b"G").to_bytes())
             .expect("valid Orchard generator")
+            .to_projective()
     };
 }
 
@@ -52,6 +53,6 @@ mod tests {
         let expected = EpAffine::from(ActionVerificationKey(reddsa::VerificationKey::from(
             &scalar_one,
         )));
-        assert_eq!(*ACTION_AUTH_GENERATOR, expected);
+        assert_eq!(*ACTION_AUTH_GENERATOR, expected.to_projective());
     }
 }
