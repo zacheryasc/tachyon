@@ -26,7 +26,7 @@ use ragu_primitives::{Element, GadgetExt as _, Point, allocator::Allocator, io::
 use udon::{curve::Affine as _, field::Field as _};
 
 use crate::{
-    constants::{EPOCH_MAX, MAX_MONEY},
+    constants::MAX_MONEY,
     digest::poseidon,
     gadgets::{arithmetic as circuit, curve},
     keys::{NoteMasterKey, PaymentKey, ProofAuthorizingKey},
@@ -375,11 +375,13 @@ impl Step<Pasta> for NullifierDerive {
             })?),
         );
         let epoch_end = epoch_start.add(dr, &width);
-        circuit::Bits::<D, 32>::bounded(dr, &epoch_end, u64::from(EPOCH_MAX)).map_err(|_err| {
-            ragu_core::Error::InvalidWitness(
-                "NullifierDerive: window exceeds the epoch range".into(),
-            )
-        })?;
+        let end_value = circuit::EpochIndex::new(dr, &epoch_end)
+            .map_err(|_err| {
+                ragu_core::Error::InvalidWitness(
+                    "NullifierDerive: window exceeds the epoch range".into(),
+                )
+            })?
+            .value()?;
         let mk = left_encoded.as_gadget().mk.clone();
         let z = oracles.zeta().clone();
         let seq_at_z = oracles.query(dr, Slot::output(0), &z)?;
@@ -405,11 +407,6 @@ impl Step<Pasta> for NullifierDerive {
             ragu_core::Error::InvalidWitness(
                 "NullifierDerive: sequence does not match the derived window".into(),
             )
-        })?;
-        let end_value = D::try_just(|| {
-            EpochIndex::try_from(*epoch_end.value().take()).map_err(|_err| {
-                ragu_core::Error::InvalidWitness("range-checked epoch conversion failed".into())
-            })
         })?;
         let output = D::just(|| {
             let (start, _) = witness.take();

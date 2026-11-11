@@ -15,6 +15,7 @@ use udon::field::Field as _;
 use crate::{
     constants::EPOCH_MAX,
     pasta::{Fp, Fq},
+    primitives,
 };
 
 /// A fixed-width Boolean decomposition.
@@ -135,6 +136,15 @@ impl<'dr, D: Driver<'dr, F = Fp>> EpochIndex<'dr, D> {
         let one = Element::constant(dr, Fp::ONE);
         let next = self.0.add(dr, &one);
         Self::new(dr, &next)
+    }
+
+    /// The native index. Witness generation rejects an out-of-range element,
+    /// as the range check rejects it in the circuit.
+    pub(crate) fn value(&self) -> Result<DriverValue<D, primitives::EpochIndex>> {
+        D::try_just(|| {
+            primitives::EpochIndex::try_from(*self.0.value().take())
+                .map_err(|_err| ragu_core::Error::InvalidWitness("epoch index out of range".into()))
+        })
     }
 
     pub(crate) fn into_element(self) -> Element<'dr, D> {

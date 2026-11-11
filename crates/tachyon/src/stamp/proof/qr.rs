@@ -1517,12 +1517,13 @@ impl Step<Pasta> for QrUnspentInit {
             witness.as_ref().map(|data| data.2),
         )?;
         let epoch_element = left_encoded.as_gadget().epoch.clone();
-        let epoch_next = circuit::EpochIndex::new(dr, &epoch_element)
+        let checked_next = circuit::EpochIndex::new(dr, &epoch_element)
             .and_then(|checked| checked.next(dr))
             .map_err(|_err| {
                 ragu_core::Error::InvalidWitness("QrUnspentInit: bucket has no next epoch".into())
-            })?
-            .into_element();
+            })?;
+        let next_value = checked_next.value()?;
+        let epoch_next = checked_next.into_element();
         #[expect(
             clippy::indexing_slicing,
             reason = "the framework enforces NUM_STAGED = 1"
@@ -1548,11 +1549,6 @@ impl Step<Pasta> for QrUnspentInit {
             ragu_core::Error::InvalidWitness("QrUnspentInit: found nullifier in the bucket".into())
         })?;
 
-        let next_value = D::try_just(|| {
-            EpochIndex::try_from(*epoch_next.value().take()).map_err(|_err| {
-                ragu_core::Error::InvalidWitness("range-checked epoch conversion failed".into())
-            })
-        })?;
         let output = D::just(|| {
             let (bucket_epoch, bucket_anchor_start, bucket_anchor_next, ..) = left.take();
             (
