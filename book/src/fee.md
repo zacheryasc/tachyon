@@ -12,9 +12,9 @@ The fee is local to the Tachyon bundle, and only its maximum is signed.
   `cvFeeMaxTachyon` and is never spent.
 - **Fee change note**: the spendable note worth $\feemax - \fee$, paid to the
   max fee note's owner. It is published only as its commitment $\cm_\chg$
-  (`cmChange`), a tachygram.
-- **Fee descriptor**: the pair $(\cv_\feemax, \fee)$ on the bundle, published
-  as `cvFeeMaxTachyon` and `vFeeTachyon`.
+  (`cmFeeChangeTachyon`), a tachygram beside the fee in either stamp trailer.
+- **Fee descriptor**: $(\cv_\feemax, \fee, \cm_\chg)$ on the bundle, published
+  as `cvFeeMaxTachyon`, `vFeeTachyon`, and `cmFeeChangeTachyon`.
 - **Fee digest**: the Poseidon digest $d_\fee$ of a fee descriptor.
 
 ## Max Fee Note
@@ -73,9 +73,8 @@ set and $\cm_\chg$ to its tachygram set:
 - Left: $\mathtt{Actions}$
 - Right: empty
 - Output: $\mathtt{Stamp}$
-- Witness: the max fee note opening, $\fee$, the left set polynomials $A$ and
-  $T$, the output set polynomials $A'$ and $T'$, and the fee singleton set
-  polynomials $S_A$ and $S_T$
+- Witness: the max fee note opening, $\fee$, and the output set polynomials
+  $A'$ and $T'$
 
 The step derives $r$ and $\cv_\feemax$ from the opening, and rejects an
 identity $\cv_\feemax$. It checks $\feemax \leq \mathsf{MAX\_MONEY}$ and
@@ -83,12 +82,12 @@ $\feemax - \fee \in [0, \mathsf{MAX\_MONEY}]$, and derives $\cm_\chg \neq 0$
 and the fee digest
 
 $$
-d_\fee = \mathsf{Poseidon}_\texttt{Tachyon-FeeDg}\bigl(x(\cv_\feemax), y(\cv_\feemax), \fee\bigr),
+d_\fee = \mathsf{Poseidon}_\texttt{Tachyon-FeeDg}\bigl(x(\cv_\feemax), y(\cv_\feemax), \fee, \cm_\chg\bigr),
 $$
 
-where $x$ and $y$ are the affine coordinates of $\cv_\feemax$.
+where $x$ and $y$ are the affine coordinates of $\cv_\feemax$. The digest absorbs the same $\cm_\chg$ wire whose root the step enforces in $S_T$.
 
-It checks the commitments to $A$ and $T$ against the left header, and enforces
+The left input binds $A$ and $T$. The step enforces the singleton factors and product relations
 
 $$
 S_A = X - d_\fee,
@@ -106,8 +105,9 @@ actions' anchor.
 $\mathsf{FeeSeed}$ proves a zero-action bundle's zero fee. It has no
 predecessors and witnesses the max fee note opening, the anchor, $S_A$ and
 $S_T$. It enforces $\feemax = 0$ and checks the singleton relations at
-$\fee = 0$, so the fee change note is the max fee note itself. Its
-$\mathtt{Stamp}$ carries the singleton commitments and the witnessed anchor.
+$\fee = 0$, so the fee change note is the max fee note itself. The fee digest
+absorbs that note's commitment. Its $\mathtt{Stamp}$ carries the singleton
+commitments and the witnessed anchor.
 
 The fee steps prove a local relation, not funding. Funding comes from
 the bundle's actions, the binding signature over the signed $\cv_\feemax$,
@@ -115,8 +115,8 @@ and transaction accounting.
 
 The prover applies $\mathsf{FeeFuse}$ after proving a bundle's actions, or
 $\mathsf{FeeSeed}$ when it has none. The proved stamp carries the applied fee
-and writes it into `vFeeTachyon` in its trailer. Every stamp has its bundle's
-fee applied.
+and fee change commitment in `vFeeTachyon` and `cmFeeChangeTachyon`. Every stamp
+has its bundle's fee applied.
 **Consensus rebuilds the stamp's action set from the published action
 descriptors and fee descriptors, recomputes the action accumulator, and checks
 the proof against it.** The stamp does not publish the action accumulator. A
@@ -128,16 +128,16 @@ stamp that doesn't cover its bundle's fee descriptor fails, as
 A stamp covers actions and fee descriptors, one fee descriptor for each
 covered bundle. Consensus rejects a repeated fee descriptor, as it rejects a
 repeated action. The action set holds the action digests and the fee digests.
-The tachygram set holds two tachygrams per action and one fee change note
-commitment per bundle. A stamp covering $N$ actions in $B$ bundles therefore
-publishes $2N + B$ tachygrams. [Bundles](./bundle.md#stamp-trailer) defines
-`hStampCoverageTachyon`. Consensus rebuilds the coverage and $d_\fee$ from the
+The tachygram set is derived from the covered actions' pairs and each covered
+bundle's fee change commitment, with repeated members rejected.
+[Bundles](./bundle.md#stamp-trailer) defines `hStampCoverageTachyon`, whose fee
+entries contain only $\cv_\feemax$ and $\fee$. Consensus rebuilds the coverage and $d_\fee$ from the
 published bundles. An accepted proof therefore covers the signed $\cv_\feemax$
 at the published fee. $\mathsf{FeeFuse}$ accepts only $\mathtt{Actions}$, so it
 cannot be applied twice to the same lineage. Merging and lifting carry fee
 digests and fee change note commitments like any other set members. A merge
-keeps the receiving stamp's fee. An unmerge undoes a merge and keeps the
-dividend's fee. Stripping carries the fee into the stripped trailer.
+keeps the receiving stamp's fee and fee change. An unmerge undoes a merge and keeps the
+dividend's fee and fee change. Stripping carries both into the stripped trailer.
 
 ## Balance
 
