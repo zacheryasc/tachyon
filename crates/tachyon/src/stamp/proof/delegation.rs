@@ -28,7 +28,7 @@ use udon::{curve::Affine as _, field::Field as _};
 use crate::{
     constants::MAX_MONEY,
     digest::poseidon,
-    gadgets::{arithmetic as circuit, curve},
+    gadgets::{self, arithmetic as circuit},
     keys::{NoteMasterKey, PaymentKey, ProofAuthorizingKey},
     note::{self, Note},
     nullifier::{self, NF_DERIVATION_WIDTH},
@@ -234,7 +234,7 @@ impl Step<Pasta> for NoteSeed {
                 .ok_or_else(|| ragu_core::Error::InvalidWitness("invalid ak encoding".into()))
         })?;
         let ak = Point::alloc(dr, ak_assignment)?;
-        let [ak_x, ak_y] = curve::coordinates(dr, &ak)?;
+        let [ak_x, ak_y] = gadgets::coordinates(dr, &ak)?;
         let pk = poseidon::with_sponge::payment_key(dr, (&ak_x, &ak_y), &nk)?.squeeze(dr)?;
         let mk = poseidon::with_sponge::nf_master(dr, &psi, &nk)?.squeeze(dr)?;
         let cm =

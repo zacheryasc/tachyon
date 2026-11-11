@@ -24,7 +24,7 @@ use crate::{
     constants::{MAX_MONEY, orchard},
     digest::poseidon,
     entropy::ActionEntropy,
-    gadgets::{arithmetic as circuit, curve},
+    gadgets::{self, arithmetic as circuit, fixed_base},
     keys::{ProofAuthorizingKey, private},
     note::{self, Note},
     pasta::{EpAffine, Fp, Fq},
@@ -273,11 +273,10 @@ impl Step<Pasta> for OutputAction {
         let pad_root = left_encoded.as_gadget().pad.clone();
         let theta = Element::alloc(dr, &mut (), witness.as_ref().map(|data| data.0.0))?;
         let alpha = poseidon::with_sponge::alpha_output(dr, &theta, &cm_root)?.squeeze(dr)?;
-        let alpha_bits = circuit::Bits::<D, 255>::new(dr, &alpha)?;
-        let curve::Finite { x: rk_x, y: rk_y } =
-            curve::fixed_base::unsigned::G_TABLE.walk(dr, &alpha_bits)?;
+        let rk = fixed_base::G_TABLE.mul_canonical(dr, &alpha, None)?;
+        let [rk_x, rk_y] = gadgets::coordinates(dr, &rk)?;
         let cv = left_encoded.as_gadget().cv.clone();
-        let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
+        let [cv_x, cv_y] = gadgets::coordinates(dr, &cv)?;
         let action_root = poseidon::with_sponge::action_digest(dr, (&cv_x, &cv_y), (&rk_x, &rk_y))?
             .squeeze(dr)?;
         #[expect(clippy::indexing_slicing, reason = "framework enforces NUM_STAGED = 1")]
@@ -416,7 +415,7 @@ impl Step<Pasta> for SpendAction {
             &mut (),
             witness.as_ref().map(|data| Fp::from(data.1.nk)),
         )?;
-        let [ak_x, ak_y] = curve::coordinates(dr, &ak)?;
+        let [ak_x, ak_y] = gadgets::coordinates(dr, &ak)?;
         let derived_pk =
             poseidon::with_sponge::payment_key(dr, (&ak_x, &ak_y), &nk)?.squeeze(dr)?;
         let pk = left_encoded.as_gadget().pk.clone();
@@ -426,12 +425,10 @@ impl Step<Pasta> for SpendAction {
         let cm = left_encoded.as_gadget().cm.clone();
         let theta = Element::alloc(dr, &mut (), witness.as_ref().map(|data| data.0.0))?;
         let alpha = poseidon::with_sponge::alpha_spend(dr, &theta, &cm)?.squeeze(dr)?;
-        let alpha_bits = circuit::Bits::<D, 255>::new(dr, &alpha)?;
-        let ak_finite = curve::Finite { x: ak_x, y: ak_y };
-        let curve::Finite { x: rk_x, y: rk_y } =
-            curve::fixed_base::unsigned::G_TABLE.walk_onto(dr, &alpha_bits, &ak_finite)?;
+        let rk = fixed_base::G_TABLE.mul_canonical(dr, &alpha, Some(&ak))?;
+        let [rk_x, rk_y] = gadgets::coordinates(dr, &rk)?;
         let cv = left_encoded.as_gadget().cv.clone();
-        let [cv_x, cv_y] = curve::coordinates(dr, &cv)?;
+        let [cv_x, cv_y] = gadgets::coordinates(dr, &cv)?;
         let action_root = poseidon::with_sponge::action_digest(dr, (&cv_x, &cv_y), (&rk_x, &rk_y))?
             .squeeze(dr)?;
         #[expect(clippy::indexing_slicing, reason = "framework enforces NUM_STAGED = 1")]
@@ -816,7 +813,7 @@ pub struct FeeFuse;
 
 lazy_static! {
     // s = MAX_MONEY - maximum, so the corrected walk computes [-maximum]V.
-    static ref FEE_V_TABLE: curve::fixed_base::unsigned::Table<17> = curve::fixed_base::unsigned::Table::new(
+    static ref FEE_V_TABLE: fixed_base::Table<17> = fixed_base::Table::new(
         *orchard::VALUE_COMMIT_V,
         -*orchard::VALUE_COMMIT_V * Fq::from(MAX_MONEY)
     );
@@ -903,9 +900,6 @@ impl Step<Pasta> for FeeFuse {
         })?;
         let bound = Element::constant(dr, Fp::from(MAX_MONEY));
         let slack = bound.sub(dr, &maximum);
-        let slack_bits = circuit::Bits::<D, 51>::new(dr, &slack).map_err(|_err| {
-            ragu_core::Error::InvalidWitness("FeeFuse: maximum fee exceeds MAX_MONEY".into())
-        })?;
         let pk = Element::alloc(
             dr,
             &mut (),
@@ -926,10 +920,13 @@ impl Step<Pasta> for FeeFuse {
         for (index, actual) in [&pk, &psi, &rcm, &maximum, &fee].into_iter().enumerate() {
             actual.enforce_equal(dr, &oracles.staged()[index])?;
         }
-        let blind_bits = circuit::Bits::<D, 255>::new(dr, &blind)?;
-        let blind_point = curve::fixed_base::unsigned::R_TABLE.walk(dr, &blind_bits)?;
-        let curve::Finite { x: cv_x, y: cv_y } =
-            FEE_V_TABLE.walk_onto(dr, &slack_bits, &blind_point)?;
+        let blind_point = fixed_base::R_TABLE.mul_canonical(dr, &blind, None)?;
+        let cv = FEE_V_TABLE
+            .mul_bounded(dr, &slack, &blind_point)
+            .map_err(|_err| {
+                ragu_core::Error::InvalidWitness("FeeFuse: maximum fee exceeds MAX_MONEY".into())
+            })?;
+        let [cv_x, cv_y] = gadgets::coordinates(dr, &cv)?;
         let fee_digest =
             poseidon::with_sponge::fee_digest(dr, (&cv_x, &cv_y), &fee)?.squeeze(dr)?;
         let fee_change =
@@ -1059,9 +1056,8 @@ impl Step<Pasta> for FeeSeed {
         for (index, actual) in [&pk, &psi, &rcm].into_iter().enumerate() {
             actual.enforce_equal(dr, &oracles.staged()[index])?;
         }
-        let blind_bits = circuit::Bits::<D, 255>::new(dr, &blind)?;
-        let curve::Finite { x: cv_x, y: cv_y } =
-            curve::fixed_base::unsigned::R_TABLE.walk(dr, &blind_bits)?;
+        let cv = fixed_base::R_TABLE.mul_canonical(dr, &blind, None)?;
+        let [cv_x, cv_y] = gadgets::coordinates(dr, &cv)?;
         let zero = Element::constant(dr, Fp::ZERO);
         let fee_digest =
             poseidon::with_sponge::fee_digest(dr, (&cv_x, &cv_y), &zero)?.squeeze(dr)?;

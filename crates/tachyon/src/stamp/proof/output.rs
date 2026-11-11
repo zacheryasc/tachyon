@@ -19,7 +19,7 @@ use crate::{
     Tachygram,
     constants::MAX_MONEY,
     digest::poseidon,
-    gadgets::{arithmetic as circuit, curve},
+    gadgets::{arithmetic as circuit, fixed_base},
     note::Note,
     pasta::{EpAffine, Fp, Fq},
     value,
@@ -115,7 +115,9 @@ impl Step<Pasta> for OutputBind {
                 .as_ref()
                 .map(|data| Fp::from(u64::from(data.0.value))),
         )?;
-        let amount_bits = circuit::Bits::<D, 51>::bounded(dr, &amount, MAX_MONEY)?;
+        let bound = Element::constant(dr, Fp::from(MAX_MONEY));
+        let slack = bound.sub(dr, &amount);
+        circuit::Bits::<D, 51>::new(dr, &slack)?;
         let rcm = Element::alloc(
             dr,
             &mut (),
@@ -137,10 +139,9 @@ impl Step<Pasta> for OutputBind {
             poseidon::with_sponge::pad_tachygram(dr, &rcm, &pk, &amount, &psi)?.squeeze(dr)?;
         cm.clone().enforce_nonzero(dr)?;
         pad.clone().enforce_nonzero(dr)?;
-        let rcv_bits =
-            circuit::Bits::<D, 255>::free(dr, &witness.as_ref().map(|data| Fq::from(data.1)))?;
-        let cv =
-            curve::fixed_base::unsigned::NEG_V_TABLE.commitment(dr, &amount_bits, &rcv_bits)?;
+        let blind_point =
+            fixed_base::R_TABLE.mul_free(dr, &witness.as_ref().map(|data| Fq::from(data.1)))?;
+        let cv = fixed_base::NEG_V_TABLE.mul_bounded(dr, &amount, &blind_point)?;
         let output = D::just(|| {
             (
                 Tachygram::from(*cm.value().take()),

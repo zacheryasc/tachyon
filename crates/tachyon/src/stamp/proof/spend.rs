@@ -19,7 +19,7 @@ use super::{delegation::NoteSecret, spendable::NoteSpendable};
 use crate::{
     constants::{EPOCH_MAX, MAX_MONEY},
     digest::poseidon,
-    gadgets::{arithmetic as circuit, curve},
+    gadgets::{arithmetic as circuit, fixed_base},
     keys::PaymentKey,
     note,
     nullifier::Nullifier,
@@ -187,7 +187,9 @@ impl Step<Pasta> for SpendBind {
             ragu_core::Error::InvalidWitness("SpendBind: secret does not match note".into())
         })?;
         let value = right_encoded.as_gadget().value.clone();
-        let value_bits = circuit::Bits::<D, 51>::bounded(dr, &value, MAX_MONEY)?;
+        let bound = Element::constant(dr, Fp::from(MAX_MONEY));
+        let slack = bound.sub(dr, &value);
+        circuit::Bits::<D, 51>::new(dr, &slack)?;
         let epoch = left_encoded.as_gadget().epoch_current.clone();
         let one = Element::constant(dr, Fp::ONE);
         let next = epoch.add(dr, &one);
@@ -203,9 +205,9 @@ impl Step<Pasta> for SpendBind {
             ragu_core::Error::InvalidWitness("SpendBind: next-epoch nullifier is zero".into())
         })?;
 
-        let rcv_bits =
-            circuit::Bits::<D, 255>::free(dr, &witness.as_ref().map(|data| Fq::from(data.0)))?;
-        let cv = curve::fixed_base::unsigned::V_TABLE.commitment(dr, &value_bits, &rcv_bits)?;
+        let blind_point =
+            fixed_base::R_TABLE.mul_free(dr, &witness.as_ref().map(|data| Fq::from(data.0)))?;
+        let cv = fixed_base::V_TABLE.mul_bounded(dr, &value, &blind_point)?;
         let output = D::just(|| {
             let (spendable_cm, _, anchor) = left.take();
             let (_, note, _) = right.take();
