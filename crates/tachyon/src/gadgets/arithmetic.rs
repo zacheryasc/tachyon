@@ -49,7 +49,10 @@ impl<'dr, D: Driver<'dr, F = Fp>, const N: usize> Bits<'dr, D, N> {
         recomposed.enforce_equal(dr, value)?;
         let result = Self(bits);
         if N == 255 {
-            result.enforce_canonical(dr)?;
+            // Only instantiate the width-specific checker for 255 bits.
+            // Cloning the Boolean handles adds no circuit constraints.
+            Bits::<D, 255>(FixedVec::from_fn(|index| result.0[index].clone()))
+                .enforce_canonical(dr)?;
         }
         Ok(result)
     }
