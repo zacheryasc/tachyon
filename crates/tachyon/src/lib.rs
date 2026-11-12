@@ -27,7 +27,8 @@ pub mod value;
 pub mod witness;
 
 mod arithmetic;
-#[cfg(all(test, feature = "std"))]
+#[cfg(test)]
+#[cfg(feature = "std")]
 mod bench;
 mod collections;
 mod primitives;

@@ -4,6 +4,10 @@
 use core::{hint::black_box, time::Duration};
 use std::time::Instant;
 
+#[expect(
+    clippy::assertions_on_constants,
+    reason = "reject debug benchmarks at runtime"
+)]
 pub(crate) fn median<T>(name: &str, mut run: impl FnMut() -> T) {
     assert!(!cfg!(debug_assertions), "benchmarks require --release");
     drop(black_box(run())); // Warm caches and lazy initialization before sampling.
