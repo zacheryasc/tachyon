@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Skip action-key comparisons when descriptor commitments differ; add opt-in
+  release benchmarks for descriptor sorting and set construction (`just bench`).
+
 ## [0.0.0] - 2026-02-16
 
 ### Added
