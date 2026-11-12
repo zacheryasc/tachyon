@@ -20,6 +20,10 @@ test *ARGS:
     cargo test --workspace --release --features test-epoch-size --test integration -- {{ARGS}}
     cargo test --workspace --release --features test-epoch-size --doc -- {{ARGS}}
 
+# opt-in release benchmarks; fixed fixtures, warm-up, median of nine samples
+bench:
+    cargo test --workspace --release --locked --features test-epoch-size --lib bench_ -- --ignored --nocapture --test-threads=1
+
 doc *ARGS:
     RUSTDOCFLAGS="{{_katex}}" cargo doc --workspace --no-deps --document-private-items {{ARGS}}
 
