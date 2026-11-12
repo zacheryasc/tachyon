@@ -180,3 +180,6 @@ pub(crate) fn interpolate(points: &[(Fp, Fp)]) -> Option<Vec<Fp>> {
     coeffs.resize(points.len(), Fp::ZERO);
     Some(coeffs)
 }
+
+#[cfg(test)]
+mod tests;
