@@ -65,6 +65,10 @@ just fmt     # cargo +nightly fmt --all
 just doc     # cargo doc --workspace --no-deps
 ```
 
+Benchmarks are ignored by ordinary tests. Compare baseline and patch on the same
+idle CPU (Linux: `taskset -c 0 just bench`). Fixture generation is excluded;
+per-operation allocations and result destruction are included.
+
 ## License
 
 MIT OR Apache-2.0
