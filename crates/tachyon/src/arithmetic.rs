@@ -165,13 +165,19 @@ pub(crate) fn interpolate(points: &[(Fp, Fp)]) -> Option<Vec<Fp>> {
         .map(|(degree, coeff)| Fp::from(degree as u64) * coeff)
         .collect();
 
+    let mut weights = abscissas;
+    for weight in &mut weights {
+        *weight = evaluate_iter(&derivative, *weight);
+        if weight.is_zero() {
+            return None;
+        }
+    }
+    Fp::batch_invert(&mut weights, &mut vec![Fp::ZERO; points.len()]);
     let weighted: Vec<(Fp, Fp)> = points
         .iter()
-        .map(|&(at, value)| {
-            let weight = evaluate_iter(&derivative, at).invert()?;
-            Some((at, weight * value))
-        })
-        .collect::<Option<Vec<_>>>()?;
+        .zip(weights)
+        .map(|(&(at, value), weight)| (at, weight * value))
+        .collect();
     if weighted.is_empty() {
         return Some([Fp::ZERO].to_vec());
     }

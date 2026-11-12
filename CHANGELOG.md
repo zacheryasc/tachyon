@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Batch interpolation denominator inversions while preserving duplicate-point
+  rejection; add opt-in release interpolation benchmarks (`just bench`).
+
 ## [0.0.0] - 2026-02-16
 
 ### Added
