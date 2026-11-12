@@ -323,3 +323,6 @@ impl FromIterator<Signature> for Vec<[u8; 64]> {
             .collect()
     }
 }
+
+#[cfg(all(test, feature = "std"))]
+mod tests;
