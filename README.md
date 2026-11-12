@@ -59,10 +59,15 @@ Requires Rust stable (1.85+) and nightly for formatting/linting.
 
 ```sh
 just test    # unit and doc tests, then integration tests with --release
+just bench   # opt-in release microbenchmarks; warmed median of nine samples
 just lint    # cargo +nightly clippy --workspace --all-targets --features test-epoch-size
 just fmt     # cargo +nightly fmt --all
 just doc     # cargo doc --workspace --no-deps
 ```
+
+Benchmarks are ignored by ordinary tests. Compare baseline and patch on the same
+idle CPU (Linux: `taskset -c 0 just bench`). Fixture generation is excluded;
+per-operation allocations and result destruction are included.
 
 ## License
 

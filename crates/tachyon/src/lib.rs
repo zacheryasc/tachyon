@@ -27,6 +27,9 @@ pub mod value;
 pub mod witness;
 
 mod arithmetic;
+#[cfg(test)]
+#[cfg(feature = "std")]
+mod bench;
 mod collections;
 mod primitives;
 mod ragu_constraint;
