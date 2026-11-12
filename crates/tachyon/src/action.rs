@@ -79,7 +79,7 @@ impl Ord for Descriptor {
                 .to_bytes()
                 .cmp(&EpAffine::from(other.cv).to_bytes())
         }
-        .then({
+        .then_with(|| {
             EpAffine::from(self.rk)
                 .to_bytes()
                 .cmp(&EpAffine::from(other.rk).to_bytes())
@@ -324,5 +324,6 @@ impl FromIterator<Signature> for Vec<[u8; 64]> {
     }
 }
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(test)]
+#[cfg(feature = "std")]
 mod tests;

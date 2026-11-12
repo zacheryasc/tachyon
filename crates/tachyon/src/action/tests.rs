@@ -3,6 +3,7 @@ use alloc::{collections::BTreeSet, format, vec::Vec};
 use rand::{SeedableRng as _, rngs::StdRng};
 
 use super::*;
+use crate::bench;
 
 fn descriptors(count: usize, mixed: bool) -> Vec<Descriptor> {
     let rng = &mut StdRng::seed_from_u64(0);
@@ -45,12 +46,12 @@ fn bench_descriptor_ordering() {
     for count in [64, 256, 1024] {
         for mixed in [false, true] {
             let input = descriptors(count, mixed);
-            crate::bench::median(&format!("descriptor_sort/{count}/mixed={mixed}"), || {
+            bench::median(&format!("descriptor_sort/{count}/mixed={mixed}"), || {
                 let mut sorted = input.clone();
                 sorted.sort_unstable();
                 sorted
             });
-            crate::bench::median(&format!("descriptor_set/{count}/mixed={mixed}"), || {
+            bench::median(&format!("descriptor_set/{count}/mixed={mixed}"), || {
                 input.iter().copied().collect::<BTreeSet<_>>()
             });
         }
